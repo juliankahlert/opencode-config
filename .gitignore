@@ -12,5 +12,6 @@ erl_crash.dump
 # Rust
 /target/
 
+# Ignore TASK and PLAN files by default
 TASK_*.md
 PLAN.md
