@@ -12,6 +12,14 @@ erl_crash.dump
 # Rust
 /target/
 
+# opencode-config artifacts
+/opencode.json
+**/opencode.json
+/opencode.bak3
+
 # Ignore TASK and PLAN files by default
 TASK_*.md
 PLAN.md
+TODO.md
+/completions
+*.lock

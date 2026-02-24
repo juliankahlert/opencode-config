@@ -1,0 +1,16 @@
+{
+  "agent": {
+    "build": {
+      "model": "{{agent-build-model}}",
+      "variant": "{{agent-build-variant}}",
+      "reasoningEffort": "{{agent-build-reasoning-effort}}"
+    },
+    "review": {
+      "model": "{{agent-review-model}}",
+      "variant": "{{agent-review-variant}}",
+      "reasoningEffort": "{{agent-review-reasoning-effort}}",
+      "textVerbosity": "{{agent-review-text-verbosity}}"
+    }
+  },
+  "description": "Build uses {{agent-build-model}}"
+}

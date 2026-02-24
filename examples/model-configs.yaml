@@ -1,0 +1,12 @@
+palettes:
+  default:
+    agents:
+      build:
+        model: openrouter/openai/gpt-4o
+        variant: mini
+        reasoning: true
+      review:
+        model: openrouter/openai/gpt-4o
+        reasoning:
+          effort: medium
+          text_verbosity: low

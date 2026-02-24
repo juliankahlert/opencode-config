@@ -1,0 +1,59 @@
+[package]
+name = "opencode-config"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Generate opencode.json from model palettes and templates"
+
+[package.metadata]
+section = "Utilities"
+
+[package.metadata.generate-rpm]
+name = "opencode-config"
+release = "1"
+license = "MIT"
+description = "Generate opencode.json from model palettes and templates"
+vendor = "opencode"
+url = "https://github.com/anomalyco/opencode-config"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/bin/"
+source = "target/release/opencode-config"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/share/bash-completion/completions/"
+source = "completions/opencode-config.bash"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/share/zsh/site-functions/"
+source = "completions/_opencode-config"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/share/fish/vendor_completions.d/"
+source = "completions/opencode-config.fish"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/share/elvish/lib/"
+source = "completions/opencode-config.elv"
+
+[[package.metadata.generate-rpm.assets]]
+dest = "/usr/share/PowerShell/Modules/opencode-config/"
+source = "completions/_opencode-config.ps1"
+
+[dependencies]
+anyhow = "1.0.93"
+clap = { version = "4.5.31", features = ["derive"] }
+clap_complete = "4.5.42"
+dialoguer = "0.11.0"
+directories = "5.0.1"
+glob = "0.3.1"
+regex = "1.10.6"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
+serde_yaml = "0.9.34"
+tempfile = "3.26.0"
+thiserror = "2.0.11"
+
+[dev-dependencies]
+assert_cmd = "2.0.14"
+predicates = "3.1.2"

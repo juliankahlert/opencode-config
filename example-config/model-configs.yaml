@@ -1,0 +1,68 @@
+---
+palettes:
+  copilot:
+    agents:
+      orchestrate:
+        model: github-copilot/gpt-5.2-codex
+        variant: high
+      plan:
+        model: github-copilot/gpt-5-mini
+        variant: high
+      smart:
+        model: github-copilot/gpt-5.2-codex
+        variant: high
+      smart-max:
+        model: github-copilot/gpt-5.2-codex
+        variant: high
+      smart-fast:
+        model: github-copilot/gpt-5.2-codex
+        variant: medium
+      simple:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+      simple-fast:
+        model: github-copilot/gpt-5-mini
+        variant: low
+
+  copilot-free:
+    agents:
+      orchestrate:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+      plan:
+        model: github-copilot/gpt-5-mini
+        variant: high
+      smart:
+        model: github-copilot/gpt-5-mini
+        variant: high
+      smart-max:
+        model: github-copilot/gpt-5-mini
+        variant: high
+      smart-fast:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+      simple:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+      simple-fast:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+
+  openrouter:
+    agents:
+      orchestrate:
+        model: openrouter/x-ai/grok-4.1-fast
+        reasoning: true
+      plan:
+        model: openrouter/x-ai/grok-4.1-fast
+        reasoning: true
+      smart:
+        model: openrouter/minimax/minimax-m2.5
+      smart-max:
+        model: openrouter/z-ai/glm-5
+      smart-fast:
+        model: openrouter/minimax/minimax-m2.5
+      simple:
+        model: openrouter/openai/gpt-5-nano
+      simple-fast:
+        model: openrouter/openai/gpt-5-nano
