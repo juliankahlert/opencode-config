@@ -30,3 +30,14 @@ install:
 
 reinstall:
   sudo dnf reinstall {{rpm_dir}}/*.rpm
+
+pages:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  for cmd in mdbook mdbook-mermaid; do
+    if ! command -v "$cmd" &>/dev/null; then
+      echo "error: '$cmd' is not installed" >&2
+      exit 1
+    fi
+  done
+  mdbook build pages
