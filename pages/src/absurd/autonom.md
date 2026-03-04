@@ -37,7 +37,7 @@ flowchart TD
 
     subgraph EXEC ["<span>3.</span> Execute - Per Work Package"]
         direction TB
-        IMPL(["<span>a.</span> Implement<br/>3+ @coder agents via task<br/>Non-overlapping file scopes"]) --> VERIFY
+        IMPL(["<span>a.</span> Implement<br/>Maximize parallel @coder agents via task<br/>Non-overlapping file scopes"]) --> VERIFY
         VERIFY(["<span>b.</span> Verify<br/>task to @explore + task to @test"]) --> VPASS{Pass?}
         VPASS -->|No| FIX1[Fix via task to @coder] --> VERIFY
         VPASS -->|Yes| REVIEW
@@ -66,16 +66,33 @@ Autonomous mode uses **strict thresholds** since there is no human review:
 | Review | `approved` result | `changes-requested` with any issue |
 | Build | Exit code 0 | Non-zero exit code |
 
+## Delegation Protocol
+
+Every `task` delegation includes the path to the relevant specification file or folder so the subagent can reference the system design:
+
+| Subagent | Spec path to include |
+|----------|---------------------|
+| @explore | `docs/src/absurd/explore.md` |
+| @expert | `docs/src/absurd/expert.md` and any domain-relevant spec files |
+| @coder | `docs/src/absurd/coder.md` and the spec files for the feature being implemented |
+| @ux | `docs/src/absurd/ux.md` and the spec files for the feature being implemented |
+| @test | `docs/src/absurd/test.md` |
+| @checker | `docs/src/absurd/checker.md` |
+| @git | `docs/src/absurd/git.md` |
+
+When the task involves a specific feature or subsystem, also include the path to that feature's specification. Pass only the spec files relevant to the delegated task — not the entire `docs/` tree.
+
 ## Sanity Checking
 
 The orchestrator has no direct file access. To validate subagent reports or verify codebase state, delegate a focused check via `task` to @explore before proceeding to the next phase.
 
 ## File-Scope Isolation
 
-Before dispatching parallel @coder agents via `task`, validate that work packages have non-overlapping file scopes. If overlap is detected, serialize the overlapping packages (run sequentially, not in parallel). Do not proceed with parallel execution on overlapping scopes.
+Before dispatching parallel @coder agents via `task`, validate that work packages have non-overlapping file scopes. If overlap is detected, serialize the overlapping packages (run sequentially, not in parallel).
 
 ## Constitutional Principles
 
-1. **Do no harm** — never commit code that fails tests or has high-severity review findings; halt rather than ship broken code
-2. **Relentless execution** — never mark a package as failed or skip it; retry every loop until the package passes verification, review, and commit
+1. **Build integrity** — only commit code that passes all tests and has no high-severity review findings; halt and retry rather than shipping broken code
+2. **Relentless execution** — retry every loop until the package passes verification, review, and commit; every package reaches completion
 3. **Auditability** — log every decision, retry, and failure so that post-hoc review can reconstruct the full execution trace
+4. **Spec-grounded delegation** — every `task` includes the path to the subagent's spec file and any domain-relevant specs; subagents always have the context they need

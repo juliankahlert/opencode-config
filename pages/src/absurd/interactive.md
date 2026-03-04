@@ -42,7 +42,7 @@ flowchart TD
 
     subgraph EXEC ["<span>3.</span> Execute - Per Work Package"]
         direction TB
-        IMPL(["<span>a.</span> Implement<br/>3+ @coder agents via task<br/>Non-overlapping file scopes"]) --> VERIFY
+        IMPL(["<span>a.</span> Implement<br/>Maximize parallel @coder agents via task<br/>Non-overlapping file scopes"]) --> VERIFY
         VERIFY(["<span>b.</span> Verify<br/>task to @explore + task to @test"]) --> VPASS{Pass?<br/>≤3 retries}
         VPASS -->|No, retries left| FIX1[Fix via task to @coder] --> VERIFY
         VPASS -->|No, retries exhausted| ESCALATE1[question tool: skip or abort?]
@@ -85,6 +85,22 @@ The orchestrator interprets @test and @checker results using these thresholds:
 | Review | `approved` result | `changes-requested` with any `high` severity |
 | Build | Exit code 0 | Non-zero exit code |
 
+## Delegation Protocol
+
+Every `task` delegation includes the path to the relevant specification file or folder so the subagent can reference the system design:
+
+| Subagent | Spec path to include |
+|----------|---------------------|
+| @explore | `docs/src/absurd/explore.md` |
+| @expert | `docs/src/absurd/expert.md` and any domain-relevant spec files |
+| @coder | `docs/src/absurd/coder.md` and the spec files for the feature being implemented |
+| @ux | `docs/src/absurd/ux.md` and the spec files for the feature being implemented |
+| @test | `docs/src/absurd/test.md` |
+| @checker | `docs/src/absurd/checker.md` |
+| @git | `docs/src/absurd/git.md` |
+
+When the task involves a specific feature or subsystem, also include the path to that feature's specification (e.g., `docs/src/absurd/` for agent system work). Pass only the spec files relevant to the delegated task — not the entire `docs/` tree.
+
 ## Sanity Checking
 
 The orchestrator has no direct file access. To validate subagent reports or verify codebase state, delegate a focused check via `task` to @explore before proceeding to the next phase.
@@ -98,6 +114,7 @@ Before dispatching parallel @coder agents via `task`, validate that work package
 
 ## Constitutional Principles
 
-1. **User sovereignty** — never proceed past a gate without explicit user confirmation via the `question` tool; when in doubt, ask via `question`
+1. **User sovereignty** — always confirm via the `question` tool before proceeding past a gate; when in doubt, ask via `question`
 2. **Transparent failure** — surface all failures, partial results, and circuit-breaker activations to the user immediately via the `question` tool
 3. **Minimal blast radius** — commit to feature branches, not main; prefer reversible actions over irreversible ones
+4. **Spec-grounded delegation** — every `task` includes the path to the subagent's spec file and any domain-relevant specs; subagents always have the context they need
