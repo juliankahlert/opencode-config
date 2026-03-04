@@ -1,171 +1,112 @@
 # opencode-config
 
-Generate `opencode.json` files from a palette of models and JSON/YAML templates.
+A Rust CLI tool that generates `opencode.json` configuration files by combining
+**model palettes** (YAML) with **JSON/YAML templates** and placeholder
+substitution.
 
-## Install
+## Project Layout
 
-- Build from source:
+```text
+opencode-config/
+  src/              # Library and binary source (Rust, edition 2024)
+  tests/            # Integration tests (assert_cmd + predicates)
+  examples/         # Minimal working config and template examples
+  pages/            # mdbook documentation site (deployed via GitHub Pages)
+  .github/workflows # CI (ci.yml) and documentation deploy (pages.yml)
+  AGENTS.md         # Guidance for automated coding agents
+  LICENSE           # MIT
+```
 
-  ```sh
-  cargo build
-  # or
-  cargo build --release
-  ```
+Key source modules: `cli.rs` (argument parsing), `config.rs` (config
+discovery), `template.rs` / `substitute.rs` (placeholder engine),
+`palette_io.rs` (YAML palette loading), `create.rs` (output generation),
+`render.rs` (rendering pipeline), `validate.rs` (schema validation).
 
-- Run directly from a debug build (from a temp working dir):
-
-  ```sh
-  repo_root="/path/to/opencode-config"
-  work_dir="$(mktemp -d)"
-  config_home="$(mktemp -d)"
-  mkdir -p "$config_home/opencode-config.d"
-
-  (cd "$work_dir" && XDG_CONFIG_HOME="$config_home" \
-    "$repo_root/target/debug/opencode-config" --help)
-  ```
-
-## Usage
+## Build & Test
 
 ```sh
-opencode-config [--strict|--no-strict] create <template> <palette> [--out <file>] [--force] \
-  [--config <dir>]
-opencode-config [--strict|--no-strict] switch <template> <palette> [--out <file>] \
-  [--config <dir>]
-opencode-config list-templates [--config <dir>]
-opencode-config list-palettes [--config <dir>]
+cargo build                                   # debug build
+cargo build --release && strip -s target/release/opencode-config  # release
+cargo fmt --all                               # format
+cargo clippy --all-targets -- -D warnings     # lint
+cargo test                                    # full test suite
+cargo test some_test -- --exact --nocapture   # single test with output
+```
+
+> **Safety:** never run the binary from the repository root -- it can write
+> `opencode.json` into the repo. Always use a temporary working directory and
+> pass `--config` or set `XDG_CONFIG_HOME` explicitly. See `AGENTS.md` for
+> details.
+
+## Usage Overview
+
+```text
+opencode-config create  <template> <palette> [--out <file>] [--force] [--config <dir>]
+opencode-config switch  <template> <palette> [--out <file>] [--config <dir>]
+opencode-config list-templates  [--config <dir>]
+opencode-config list-palettes   [--config <dir>]
 opencode-config completions <shell> --out-dir <dir>
 ```
 
-Note: `switch` behaves like `create` but always overwrites the output file
-(equivalent to `create --force`).
+| Command | Purpose |
+|---|---|
+| `create` | Generate `opencode.json` from a template + palette |
+| `switch` | Like `create` but always overwrites (implies `--force`) |
+| `list-templates` | Show available templates |
+| `list-palettes` | Show available model palettes |
+| `completions` | Generate shell completions (bash, zsh, fish, elvish, PowerShell) |
 
-## Safety
+Global flags `--strict` / `--no-strict` control whether missing placeholders
+cause errors or are silently removed.
 
-`create` writes `opencode.json` to the current working directory by default.
-**Never run the binary from this repository root.** Always use a temporary
-working directory and pass an explicit config directory or set
-`XDG_CONFIG_HOME` for every command.
+## Configuration
 
-Example (safe):
-
-```sh
-repo_root="/path/to/opencode-config"
-work_dir="$(mktemp -d)"
-config_dir="$(mktemp -d)"
-cp -R "$repo_root/examples/"* "$config_dir/"
-
-(cd "$work_dir" && "$repo_root/target/debug/opencode-config" create default default \
-  --config "$config_dir" \
-  --out opencode.json)
-```
-
-Using `XDG_CONFIG_HOME`:
-
-```sh
-repo_root="/path/to/opencode-config"
-work_dir="$(mktemp -d)"
-config_home="$(mktemp -d)"
-mkdir -p "$config_home/opencode-config.d"
-cp -R "$repo_root/examples/"* "$config_home/opencode-config.d/"
-
-(cd "$work_dir" && XDG_CONFIG_HOME="$config_home" \
-  "$repo_root/target/debug/opencode-config" list-templates)
-```
-
-## Configuration layout
-
-The config directory contains a model palette file and a template directory:
+The tool reads from `~/.config/opencode-config.d` (or `$XDG_CONFIG_HOME/opencode-config.d`),
+overridable with `--config <dir>`:
 
 ```text
 opencode-config.d/
-  model-configs.yaml
+  model-configs.yaml      # palette definitions (agents + models)
+  config.yaml             # optional run options (strict, env_allow, ...)
   template.d/
-    default.json
+    default.json          # one or more JSON/YAML templates
 ```
 
-When you pass `--config`, provide the path that contains `model-configs.yaml`
-and `template.d/`. Without `--config`, the tool uses
-`$XDG_CONFIG_HOME/opencode-config.d` (usually `~/.config/opencode-config.d`).
+### Templates & Placeholders
 
-### model-configs.yaml
+Templates contain placeholders of the form `{{agent-<name>-<field>}}` (e.g.
+`{{agent-build-model}}`). The engine walks the JSON tree, matches placeholders
+via regex, and substitutes values from the selected palette. Special rules:
 
-```yaml
-palettes:
-  default:
-    agents:
-      build:
-        model: openrouter/openai/gpt-4o
-        variant: mini
+- **Variant removal** -- missing `variant` placeholders remove the key entirely
+  (unless `--strict`).
+- **Node-level substitution** -- a string value that is exactly one placeholder
+  is replaced with the resolved value's native type (number, bool, object).
+- **Alias shorthand** -- `"model": "{{build}}"` copies model/variant/reasoning
+  from the named palette agent before regular substitution.
+- **YAML templates** -- `.yaml`/`.yml` templates are converted to JSON before
+  substitution; anchors and comments are not preserved.
+
+## Contributing
+
+1. Fork and create a feature branch.
+2. Follow the style in `AGENTS.md` -- `cargo fmt`, `cargo clippy`, colocated
+   unit tests, integration tests in `tests/`.
+3. Use Linux kernel-style commit messages: `<area>: short description`.
+4. Open a PR with tests that demonstrate the new behavior.
+
+See [AGENTS.md](AGENTS.md) for full build commands, safety rules, and coding
+conventions.
+
+## Documentation
+
+An mdbook site is published from the `pages/` directory via GitHub Pages. Build
+locally:
+
+```sh
+cd pages && mdbook serve
 ```
 
-Model palettes in `model-configs.yaml` use the `agents` key (plural), while
-templates use `agent` (singular) for the JSON structure. Keep this distinction
-when updating examples.
+## License
 
-### Run options (config.yaml)
-
-`config.yaml` is optional and can include other top-level keys. When present, it
-must be a valid YAML mapping; empty files or `null`/`~` are treated as invalid by
-the current parser. Run options are read from the top level:
-
-```yaml
-strict: false
-env_allow: false
-env_mask_logs: false
-```
-
-Strict precedence is CLI (`--strict`/`--no-strict`) > config.yaml >
-`OPENCODE_STRICT` > default (false). Boolean values accept
-`true/false`, `1/0`, `yes/no`, and `on/off`.
-
-### Templates and placeholders
-
-Template JSON/YAML files can include placeholders like:
-
-- `{{agent-<name>-model}}`
-- `{{agent-<name>-variant}}`
-- `{{agent-<name>-reasoning-effort}}`
-- `{{agent-<name>-text-verbosity}}`
-
-Missing `variant` placeholders are removed only when the key is exactly
-`"variant"` and the value is a full placeholder ending in `-variant`
-(whitespace allowed). Otherwise the key/value is retained (non-strict) or
-errors (strict).
-
-Non-string placeholders support node-level substitution: when a string value is
-exactly a placeholder (whitespace allowed) and the resolved value is non-string,
-the entire JSON node is replaced with the resolved value. If a placeholder is
-embedded inside a larger string, strict mode errors on non-string values;
-permissive mode stringifies the value.
-
-If an agent object's `model` field is exactly a placeholder (whitespace
-allowed), e.g. `"model": "{{build}}"`, the tool treats it as an alias to the
-palette agent `build` and copies its model/variant/reasoning before regular
-placeholder substitution. This aliasing runs first. The recommended forms are
-`{{agent-<name>-model}}`/`{{agent-<name>-variant}}`; the bare `{{<name>}}` forms
-are legacy.
-
-YAML templates (`.yaml`/`.yml`) are also supported. YAML templates are
-converted to JSON before substitution, so anchors/comments are not preserved.
-Non-string map keys are unsupported and will cause a conversion error (they are
-not preserved). The rendered output remains JSON (until a `render` command
-supports other formats).
-
-Template names passed to `create` or `switch` are base names only. The resolver
-checks `<name>.json`, then `<name>.yaml`, then `<name>.yml` under `template.d/`.
-Explicit file paths are not supported.
-
-Example:
-
-```json
-{
-  "agent": {
-    "build": { "model": "{{build}}" }
-  }
-}
-```
-
-## Examples
-
-See [examples/README.md](examples/README.md) for a minimal working config and
-template.
+[MIT](LICENSE) -- Copyright (c) 2026 Julian Kahlert
