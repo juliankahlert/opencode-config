@@ -65,7 +65,82 @@ Sub-agents perform better with **only relevant context**, not full history. Each
 
 ---
 
-## Pattern 4: Structured Agent Communication
+## Pattern 4: Parallel Delegation via Batch Tool Calls
+
+When an orchestrator needs to spawn multiple independent subagents, it must issue all `task` invocations **in the same response** so they execute in parallel. Without explicit instruction, models default to sequential delegation — issuing one `task`, waiting for the result, then issuing the next.
+
+```mermaid
+flowchart LR
+    subgraph "Sequential (default model behavior)"
+        direction TB
+        S1["task → @writer page-1"] --> SW1["wait for result"]
+        SW1 --> S2["task → @writer page-2"]
+        S2 --> SW2["wait for result"]
+        SW2 --> S3["task → @writer page-3"]
+    end
+
+    subgraph "Parallel (prompted behavior)"
+        direction TB
+        P1["task → @writer page-1"]
+        P2["task → @writer page-2"]
+        P3["task → @writer page-3"]
+        P1 ~~~ P2 ~~~ P3
+        NOTE["All issued in a single response"]
+    end
+```
+
+### Why models default to sequential
+
+LLMs naturally produce one tool call, observe its result, and decide the next action. This is correct for dependent operations (where call B needs the output of call A), but wasteful for independent work like writing separate documentation pages or implementing non-overlapping file scopes.
+
+### How to prompt for parallel dispatch
+
+The prompt must contain an **explicit, affirmative instruction** to batch independent calls. Vague language like "maximize parallelism" is insufficient — the model needs concrete direction about the mechanism.
+
+| Weak (still sequential) | Strong (actually parallel) |
+|--------------------------|---------------------------|
+| "Maximize parallelism by spawning agents" | "Spawn all @writer agents simultaneously — issue every `task` invocation in the same response so they run in parallel, not sequentially" |
+| "Delegate to agents in parallel" | "Issue all `task` calls in a single response so they execute in parallel" |
+| "Use parallel execution" | "All @coder tasks **must** be issued in the same response so they run in parallel" |
+
+### Key phrasing elements
+
+1. **"in the same response"** / **"in a single response"** — tells the model the batching mechanism
+2. **"not sequentially"** — explicitly contrasts with the default behavior
+3. **"simultaneously"** — reinforces the concurrency expectation
+4. **Repeat at multiple locations** — place in process steps, delegation protocol, and constitutional principles (primacy/recency anchoring)
+
+### Prerequisites for parallel dispatch
+
+Parallel delegation is only safe when the spawned agents have **non-overlapping scopes**. Before issuing batch calls:
+
+- Validate that file scopes do not overlap (for @coder agents)
+- Ensure each agent's task is self-contained with all required context
+- If overlap is detected, serialize the overlapping tasks instead
+
+### Example prompt pattern
+
+```
+## Process
+5. Delegate: Spawn all @technical-writer agents simultaneously
+   in a single response. Each task includes: target path, topic
+   scope, explore findings, and explicit write instruction.
+
+## Delegation Protocol
+All @technical-writer tasks **must** be issued in the same
+response so they run in parallel.
+
+## Constitutional Principles
+3. **Subagent coordination** — spawn all @technical-writer tasks
+   in a single response so they execute in parallel; every task
+   must include the full target path and topic scope.
+```
+
+> **Rule:** To get parallel tool calls, explicitly instruct the model to issue all independent `task` invocations in a single response. Reinforce at process, protocol, and principle layers.
+
+---
+
+## Pattern 5: Structured Agent Communication
 
 ```xml
 <agent_message>
@@ -75,7 +150,7 @@ Sub-agents perform better with **only relevant context**, not full history. Each
   <instruction>Review this diff for security issues</instruction>
   <context>[relevant context only]</context>
   <expected_output>
-    JSON: {severity, location, description, suggestion}
+    MARKDOWN: {severity, location, description, suggestion}
   </expected_output>
 </agent_message>
 ```
@@ -84,7 +159,7 @@ Structured messages between agents improve accuracy by making expectations expli
 
 ---
 
-## Pattern 5: Constitutional Guardian
+## Pattern 6: Constitutional Guardian
 
 ```mermaid
 flowchart TD
@@ -130,7 +205,7 @@ Every implementation passes through multiple verification layers before being ac
   </process>
 
   <output_format>
-    [Exact schema: JSON, XML, or structured text]
+    [Exact schema: MARKDOWN, YAML, or structured text]
   </output_format>
 
   <boundaries>

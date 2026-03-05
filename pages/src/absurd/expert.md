@@ -30,7 +30,7 @@ flowchart TD
 
 **Boundary with @explore:** Expert performs *architectural analysis* (decisions, trade-offs, work-package design). Explorer performs *code discovery* (finding files, reading implementations, locating patterns). Expert delegates discovery via `task` to explorer, then reasons over the results.
 
-**Recursive @expert spawning:** Only justified when the analysis naturally decomposes into independent architectural sub-questions (e.g., "analyze the auth system" + "analyze the database layer" in parallel). For simple decomposition of file reading, use @explore instead.
+**Recursive @expert spawning:** Only justified when the analysis naturally decomposes into independent architectural sub-questions (e.g., "analyze the auth system" + "analyze the database layer"). Spawn all recursive @expert tasks in a single response so they execute in parallel. For simple decomposition of file reading, use @explore instead.
 
 **Research guidance:** For integration points such as REST APIs or third-party libraries, the expert should research online using web resources since these are usually more up to date. When dealing with web APIs, always check the current `date` and research for the most recent recommendations and best practices. The same approach applies when evaluating or recommending external libraries.
 

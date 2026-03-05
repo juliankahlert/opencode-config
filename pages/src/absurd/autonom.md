@@ -37,7 +37,7 @@ flowchart TD
 
     subgraph EXEC ["<span>3.</span> Execute - Per Work Package"]
         direction TB
-        IMPL(["<span>a.</span> Implement<br/>Maximize parallel @coder agents via task<br/>Non-overlapping file scopes"]) --> VERIFY
+        IMPL(["<span>a.</span> Implement<br/>Spawn all @coder agents in a single response<br/>Non-overlapping file scopes"]) --> VERIFY
         VERIFY(["<span>b.</span> Verify<br/>task to @explore + task to @test"]) --> VPASS{Pass?}
         VPASS -->|No| FIX1[Fix via task to @coder] --> VERIFY
         VPASS -->|Yes| REVIEW
@@ -88,7 +88,7 @@ The orchestrator has no direct file access. To validate subagent reports or veri
 
 ## File-Scope Isolation
 
-Before dispatching parallel @coder agents via `task`, validate that work packages have non-overlapping file scopes. If overlap is detected, serialize the overlapping packages (run sequentially, not in parallel).
+Spawn all @coder agents for a work package in a single response so they execute in parallel. Before dispatching, validate that work packages have non-overlapping file scopes. If overlap is detected, serialize the overlapping packages (run sequentially, not in parallel).
 
 ## Orchestrator: Task-tool Prompt Rules
 

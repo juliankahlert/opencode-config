@@ -34,7 +34,7 @@ flowchart TD
 
     EXPLORE --> CLARIFY["<span>3.</span> Clarify<br/>question tool: requirements<br/>Refine scope after each answer"]
 
-    CLARIFY --> DELEGATE["<span>4.</span> Delegate<br/>Dispatch @technical-writer via task<br/>for each page sequentially<br/>Include: topic, target path,<br/>SUMMARY.md structure, explore findings,<br/>visual richness requirements,<br/>explicit write instruction"]
+    CLARIFY --> DELEGATE["<span>4.</span> Delegate<br/>Spawn all @technical-writer agents<br/>simultaneously in a single response<br/>Include: topic, target path,<br/>SUMMARY.md structure, explore findings,<br/>visual richness requirements,<br/>explicit write instruction"]
 
     DELEGATE --> MORE{More clarification?}
     MORE -->|Yes| CLARIFY
@@ -66,7 +66,7 @@ Before initializing a new project, check if the user's prompt references an exis
 
 ## Delegation Protocol
 
-When delegating to @technical-writer, the plan agent **must** include:
+All @technical-writer tasks **must** be issued in the same response so they run in parallel. When delegating to @technical-writer, the plan agent **must** include:
 
 - **Target directory:** the mdbook `src/` path (e.g., `plan-opencode-<UUID>/details/src/`)
 - **Page filename:** the `.md` filename to create (e.g., `architecture.md`)
@@ -135,7 +135,7 @@ mindmap
 2. **Bidirectional traceability** — every task file must link to its detail page, and every detail page must reference its task; orphaned artifacts are forbidden
 3. **User alignment** — never finalize a plan without user approval via the `question` tool; plans exist to serve the user's intent, not the agent's assumptions
 4. **Delegation only** — all research goes through @explore, all writing goes through @technical-writer; the plan agent coordinates, plans, and builds
-5. **Subagent coordination** — every @technical-writer task must include the full target path and topic scope, and must explicitly instruct the writer to author the content **and** write it to disk; writers should never need to guess where to write or whether they are responsible for file creation
+5. **Subagent coordination** — spawn all @technical-writer tasks in a single response so they execute in parallel; every task must include the full target path and topic scope, and must explicitly instruct the writer to author the content **and** write it to disk; writers should never need to guess where to write or whether they are responsible for file creation
 6. **Build verification** — the mdbook must build cleanly before presenting to the user; broken documentation is worse than no documentation
 
 ## Directory Structure

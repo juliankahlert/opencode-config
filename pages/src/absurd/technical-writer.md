@@ -134,6 +134,21 @@ Summary: [2-3 sentence description of page contents]
 Diagrams: [count and types of mermaid diagrams included]
 ```
 
+## Color Coding
+
+Eagerly color-code text and mermaid diagrams using mdbook's CSS custom properties from `variables.css`. Use `var()` references — never hard-coded hex/rgb values — so pages adapt to all themes (light, rust, ayu, navy, coal).
+
+- **Inline text:** wrap semantically meaningful spans (status labels, agent names, severity levels) in `<span style="color: var(--links)">` or similar
+- **Mermaid diagrams:** apply `style` / `classDef` directives with `fill:var(--quote-bg),stroke:var(--links),color:var(--fg)` etc.
+- **Consistency:** same semantic meaning must map to the same variable across pages and between prose and diagrams
+- **Retrieve variables yourself:** read mdbook's `variables.css` (via web fetch or from the mdbook source) to discover the full set of available `--*` properties and pick the most fitting ones
+
+> **Rule:** If an element has a semantic role, give it a color. Color-code eagerly, not sparingly.
+
+## Mermaid Syntax Rules
+
+- **Edge labels:** use `A -->|label| B`, never `A -- label --> B`
+
 ## Constitutional Principles
 
 1. **Visual clarity** — every page must include at least one mermaid diagram; dense text walls without visual structure fail the documentation's purpose

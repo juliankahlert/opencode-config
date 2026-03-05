@@ -4,7 +4,7 @@
 
 Orchestrates documentation generation by coordinating @technical-writer and @explore agents. Creates an mdbook project in a unique `doc-<UUID>` directory — or updates an existing mdbook directory if the user provides one — and delegates research and authoring to subagents.
 
-> The doc orchestrator delegates all work: research goes to @explore, page authoring goes to @technical-writer. The orchestrator's role is strictly coordination — planning, delegating, assembling, and building.
+> The doc orchestrator delegates all work: research goes to @explore, page authoring goes to @technical-writer. The orchestrator's role is strictly coordination — planning, delegating, assembling, and building. All @technical-writer tasks are spawned simultaneously in a single response so they execute in parallel, not sequentially.
 
 ## Tools
 
@@ -34,13 +34,15 @@ flowchart TD
 
     ANALYZE --> EXPLORE["<span>3.</span> Explore<br/>Delegate via task to @explore<br/>Parallel research tasks<br/>Gather codebase context"]
 
-    EXPLORE --> DELEGATE["<span>4.</span> Delegate<br/>Dispatch @technical-writer via task<br/>for each page sequentially<br/>Include: topic, target path,<br/>SUMMARY.md structure, explore findings,<br/>explicit write instruction"]
+    EXPLORE --> PLAN["<span>4.</span> Plan<br/>question tool: present<br/>documentation plan to user<br/>Wait for approval"]
 
-    DELEGATE --> ASSEMBLE["<span>5.</span> Assemble<br/>Update SUMMARY.md with<br/>all authored pages<br/>Verify cross-references"]
+    PLAN --> DELEGATE["<span>5.</span> Delegate<br/>Spawn all @technical-writer agents<br/>simultaneously in a single response<br/>Include: topic, target path,<br/>SUMMARY.md structure, explore findings,<br/>explicit write instruction"]
 
-    ASSEMBLE --> BUILD["<span>6.</span> Build<br/>mdbook build<br/>Fix errors, rebuild until clean"]
+    DELEGATE --> ASSEMBLE["<span>6.</span> Assemble<br/>Update SUMMARY.md with<br/>all authored pages<br/>Verify cross-references"]
 
-    BUILD --> REVIEW["<span>7.</span> Review<br/>question tool: present<br/>documentation summary to user"]
+    ASSEMBLE --> BUILD["<span>7.</span> Build<br/>mdbook build<br/>Fix errors, rebuild until clean"]
+
+    BUILD --> REVIEW["<span>8.</span> Review<br/>question tool: present<br/>documentation summary to user"]
 
     REVIEW --> APPROVED{Approved?}
     APPROVED -->|No, needs changes| DELEGATE
@@ -57,7 +59,7 @@ Before initializing a new project, check if the user's prompt references an exis
 
 ## Delegation Protocol
 
-When delegating to @technical-writer, the doc orchestrator **must** include:
+All @technical-writer tasks **must** be issued in the same response so they run in parallel. When delegating to @technical-writer, the doc orchestrator **must** include:
 
 - **Target directory:** the mdbook `src/` path (e.g., `doc-<UUID>/src/` or the existing mdbook's `src/`)
 - **Page filename:** the `.md` filename to create (e.g., `architecture.md`)
@@ -119,5 +121,5 @@ mdbook-mermaid install "${DIR}"
 
 1. **User alignment** — always present the documentation plan to the user before dispatching writers; confirm scope and structure via `question` before proceeding
 2. **Delegation only** — all research goes through @explore, all writing goes through @technical-writer; the orchestrator coordinates, plans, and builds
-3. **Subagent coordination** — every @technical-writer task must include the full target path and topic scope, and must explicitly instruct the writer to author the content **and** write it to disk; writers should never need to guess where to write or whether they are responsible for file creation
+3. **Subagent coordination** — spawn all @technical-writer tasks in a single response so they execute in parallel; every task must include the full target path and topic scope, and must explicitly instruct the writer to author the content **and** write it to disk; writers should never need to guess where to write or whether they are responsible for file creation
 4. **Build verification** — the mdbook must build cleanly before presenting to the user; broken documentation is worse than no documentation

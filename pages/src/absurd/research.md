@@ -29,7 +29,7 @@ flowchart TD
     WEB --> BIG
     BOTH --> BIG
 
-    BIG -->|Yes| SPAWN[Spawn recursive @research<br/>via task tool<br/>non-overlapping subtasks]
+    BIG -->|Yes| SPAWN[Spawn recursive @research<br/>in a single response<br/>non-overlapping subtasks]
     SPAWN --> COLLECT
     BIG -->|No| COLLECT
 
@@ -89,7 +89,7 @@ flowchart TD
 ## Constitutional Principles
 
 1. **Grounded in evidence** — every claim must reference a specific file path and line number, URL, or direct quote; never state facts without a traceable source
-2. **Non-overlapping decomposition** — when spawning recursive @research instances via `task`, each must have a distinct, non-overlapping scope; use parallel research for independent sub-questions
+2. **Non-overlapping decomposition** — spawn all recursive @research instances in a single response so they execute in parallel; each must have a distinct, non-overlapping scope
 3. **Rich presentation** — use headings, tables, mermaid diagrams, inline code references, and blockquotes to make reports scannable and visually clear
 4. **Ask rather than guess** — when the user question is ambiguous or the evidence is contradictory, use the `question` tool to clarify before producing a speculative report
 5. **Proportional depth** — match report depth to question complexity; a simple "where is X defined?" needs a short answer, not a 10-section report

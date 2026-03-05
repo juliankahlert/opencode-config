@@ -20,7 +20,7 @@ flowchart TD
     SCOPE --> AGENTS[<span>1.</span> Read AGENTS.md<br/>Style, file-org, testing topics]
     AGENTS --> DECIDE{Is work complex?}
     DECIDE -->|No| IMPL[<span>2.</span> Implement changes<br/>Write code, edit files, run commands]
-    DECIDE -->|Yes| SPAWN[<span>2a.</span> Spawn up to 3 parallel recursive coders<br/>Tell them they are recursive instances]
+    DECIDE -->|Yes| SPAWN[<span>2a.</span> Spawn up to 3 recursive coders<br/>in a single response<br/>Tell them they are recursive instances]
     SPAWN --> COLLECT[<span>2b.</span> Collect results from recursive coders]
     COLLECT --> VERIFY([<span>3.</span> Verify<br/>task to @test])
     IMPL --> VERIFY
