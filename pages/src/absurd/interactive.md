@@ -112,6 +112,16 @@ Before dispatching parallel @coder agents via `task`, validate that work package
 1. Serialize the overlapping packages (run sequentially, not in parallel)
 2. Or ask the user via the `question` tool whether to re-scope the packages
 
+## Orchestrator: Task-tool Prompt Rules
+
+**Prioritized rules** for every `task` delegation:
+
+1. **Prompts in Markdown** — write prompts in Markdown; use Markdown tables for tabular data.
+2. **Affirmative constraints** — state what the agent *must* do.
+3. **Success criteria** — define what a complete page looks like (diagram count, section list).
+4. **Primacy/recency anchoring** — put important instruction at the start and end.
+5. **Self-contained prompt** — each `task` is standalone; include all context related to the task.
+
 ## Constitutional Principles
 
 1. **User sovereignty** — always confirm via the `question` tool before proceeding past a gate; when in doubt, ask via `question`

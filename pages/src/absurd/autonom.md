@@ -90,6 +90,16 @@ The orchestrator has no direct file access. To validate subagent reports or veri
 
 Before dispatching parallel @coder agents via `task`, validate that work packages have non-overlapping file scopes. If overlap is detected, serialize the overlapping packages (run sequentially, not in parallel).
 
+## Orchestrator: Task-tool Prompt Rules
+
+**Prioritized rules** for every `task` delegation:
+
+1. **Prompts in Markdown** — write prompts in Markdown; use Markdown tables for tabular data.
+2. **Affirmative constraints** — state what the agent *must* do.
+3. **Success criteria** — define what a complete page looks like (diagram count, section list).
+4. **Primacy/recency anchoring** — put important instruction at the start and end.
+5. **Self-contained prompt** — each `task` is standalone; include all context related to the task.
+
 ## Constitutional Principles
 
 1. **Build integrity** — only commit code that passes all tests and has no high-severity review findings; halt and retry rather than shipping broken code
