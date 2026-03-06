@@ -1,6 +1,5 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use glob::glob;
@@ -146,9 +145,21 @@ enum Availability {
 }
 
 struct Start;
-struct PalettesLoaded;
-struct TemplatesDiscovered;
-struct PlaceholdersScanned;
+
+struct PalettesLoaded {
+    palette_info: Option<PaletteInfo>,
+}
+
+struct TemplatesDiscovered {
+    palette_info: Option<PaletteInfo>,
+    template_paths: Vec<PathBuf>,
+}
+
+struct PlaceholdersScanned {
+    palette_info: Option<PaletteInfo>,
+    scans: Vec<TemplateScan>,
+}
+
 struct ReportReady;
 
 struct ValidatorBuilder<State> {
@@ -157,31 +168,12 @@ struct ValidatorBuilder<State> {
     report: ReportBuilder,
     placeholder_regex: Regex,
     palettes_path: PathBuf,
-    palette_info: Option<PaletteInfo>,
-    template_paths: Vec<PathBuf>,
-    scans: Vec<TemplateScan>,
-    _state: PhantomData<State>,
+    state: State,
 }
 
 struct TemplateScan {
     file_display: String,
     uses: Vec<PlaceholderUse>,
-}
-
-impl<State> ValidatorBuilder<State> {
-    fn with_state<Next>(self) -> ValidatorBuilder<Next> {
-        ValidatorBuilder {
-            config_dir: self.config_dir,
-            opts: self.opts,
-            report: self.report,
-            placeholder_regex: self.placeholder_regex,
-            palettes_path: self.palettes_path,
-            palette_info: self.palette_info,
-            template_paths: self.template_paths,
-            scans: self.scans,
-            _state: PhantomData,
-        }
-    }
 }
 
 impl ValidatorBuilder<Start> {
@@ -233,16 +225,13 @@ impl ValidatorBuilder<Start> {
             report,
             placeholder_regex,
             palettes_path,
-            palette_info: None,
-            template_paths: Vec::new(),
-            scans: Vec::new(),
-            _state: PhantomData,
+            state: Start,
         })
     }
 
     fn load_palettes(mut self) -> ValidatorBuilder<PalettesLoaded> {
         let palettes_result = load_palettes(&self.palettes_path);
-        self.palette_info = match palettes_result {
+        let palette_info = match palettes_result {
             Ok(configs) => Some(build_palette_info(
                 &configs,
                 &self.palettes_path,
@@ -254,7 +243,7 @@ impl ValidatorBuilder<Start> {
                 self.report.push(
                     Severity::Error,
                     display_path(&self.palettes_path, &self.config_dir),
-                    "$.".to_string(),
+                    "$".to_string(),
                     "invalid-palettes",
                     err.to_string(),
                 );
@@ -262,7 +251,14 @@ impl ValidatorBuilder<Start> {
             }
         };
 
-        self.with_state()
+        ValidatorBuilder {
+            config_dir: self.config_dir,
+            opts: self.opts,
+            report: self.report,
+            placeholder_regex: self.placeholder_regex,
+            palettes_path: self.palettes_path,
+            state: PalettesLoaded { palette_info },
+        }
     }
 }
 
@@ -280,26 +276,36 @@ impl ValidatorBuilder<PalettesLoaded> {
             self.report.warn_or_error(
                 self.opts.strict,
                 display_path(&self.config_dir.join("template.d"), &self.config_dir),
-                "$.".to_string(),
+                "$".to_string(),
                 "missing-templates",
                 "no templates found to validate".to_string(),
             );
         }
-        self.template_paths = template_paths;
-        Ok(self.with_state())
+        Ok(ValidatorBuilder {
+            config_dir: self.config_dir,
+            opts: self.opts,
+            report: self.report,
+            placeholder_regex: self.placeholder_regex,
+            palettes_path: self.palettes_path,
+            state: TemplatesDiscovered {
+                palette_info: self.state.palette_info,
+                template_paths,
+            },
+        })
     }
 }
 
 impl ValidatorBuilder<TemplatesDiscovered> {
     fn scan_templates(mut self) -> Result<ValidatorBuilder<PlaceholdersScanned>, ValidateError> {
-        for template_path in &self.template_paths {
+        let mut scans = Vec::new();
+        for template_path in &self.state.template_paths {
             let file_display = display_path(template_path, &self.config_dir);
             match load_template(template_path) {
                 Ok(value) => {
                     let mut uses = Vec::new();
                     scan_placeholders(
                         &value,
-                        "$.".to_string(),
+                        "$".to_string(),
                         None,
                         &mut uses,
                         &file_display,
@@ -307,13 +313,13 @@ impl ValidatorBuilder<TemplatesDiscovered> {
                         &mut self.report,
                         self.opts.strict,
                     );
-                    self.scans.push(TemplateScan { file_display, uses });
+                    scans.push(TemplateScan { file_display, uses });
                 }
                 Err(err) => {
                     self.report.push(
                         Severity::Error,
                         file_display,
-                        "$.".to_string(),
+                        "$".to_string(),
                         "invalid-template",
                         err.to_string(),
                     );
@@ -321,14 +327,24 @@ impl ValidatorBuilder<TemplatesDiscovered> {
             }
         }
 
-        Ok(self.with_state())
+        Ok(ValidatorBuilder {
+            config_dir: self.config_dir,
+            opts: self.opts,
+            report: self.report,
+            placeholder_regex: self.placeholder_regex,
+            palettes_path: self.palettes_path,
+            state: PlaceholdersScanned {
+                palette_info: self.state.palette_info,
+                scans,
+            },
+        })
     }
 }
 
 impl ValidatorBuilder<PlaceholdersScanned> {
     fn validate_placeholders(mut self) -> ValidatorBuilder<ReportReady> {
-        if let Some(info) = self.palette_info.as_ref() {
-            for scan in &self.scans {
+        if let Some(info) = self.state.palette_info.as_ref() {
+            for scan in &self.state.scans {
                 validate_placeholders(
                     &scan.uses,
                     &info.palettes,
@@ -339,7 +355,14 @@ impl ValidatorBuilder<PlaceholdersScanned> {
             }
         }
 
-        self.with_state()
+        ValidatorBuilder {
+            config_dir: self.config_dir,
+            opts: self.opts,
+            report: self.report,
+            placeholder_regex: self.placeholder_regex,
+            palettes_path: self.palettes_path,
+            state: ReportReady,
+        }
     }
 }
 
