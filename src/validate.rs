@@ -218,32 +218,8 @@ struct TemplateScan {
 
 impl ValidatorBuilder<Start> {
     fn new(config_dir: &Path, opts: ValidateOpts) -> Result<Self, ValidateError> {
-        let mut report = ReportBuilder::default();
+        let report = ReportBuilder::default();
         let placeholder_regex = Regex::new(r"\{\{\s*([^\}]+?)\s*\}\}")?;
-        if opts.env_allow == Some(true) || opts.env_mask_logs == Some(true) {
-            let mut details = Vec::new();
-            if let Some(value) = opts.env_allow.filter(|v| *v) {
-                details.push(format!("env_allow={value}"));
-            }
-            if let Some(value) = opts.env_mask_logs.filter(|v| *v) {
-                details.push(format!("env_mask_logs={value}"));
-            }
-            let message = if details.is_empty() {
-                "env flags are not implemented for validation".to_string()
-            } else {
-                format!(
-                    "env flags are not implemented for validation ({})",
-                    details.join(", ")
-                )
-            };
-            report.warn_or_error(
-                opts.strict,
-                "validate".to_string(),
-                "$.env".to_string(),
-                "env-flags-not-implemented",
-                message,
-            );
-        }
 
         let palettes_path = opts
             .palettes_path
@@ -375,10 +351,26 @@ impl ValidatorBuilder<TemplatesDiscovered> {
 
 impl ValidatorBuilder<PlaceholdersScanned> {
     fn validate_placeholders(mut self) -> ValidatorBuilder<ReportReady> {
-        if let Some(info) = self.state.palette_info.as_ref() {
-            for scan in &self.state.scans {
+        for scan in &self.state.scans {
+            // Validate env: placeholders separately.
+            validate_env_placeholders(
+                &scan.uses,
+                &scan.file_display,
+                &mut self.report,
+                self.opts.strict,
+                self.opts.env_allow,
+            );
+
+            // Validate non-env placeholders against palettes.
+            if let Some(info) = self.state.palette_info.as_ref() {
+                let palette_uses: Vec<PlaceholderUse> = scan
+                    .uses
+                    .iter()
+                    .filter(|u| !u.key.starts_with("env:"))
+                    .cloned()
+                    .collect();
                 validate_placeholders(
-                    &scan.uses,
+                    &palette_uses,
                     &info.palettes,
                     &scan.file_display,
                     &mut self.report,
@@ -503,30 +495,6 @@ fn validate_dir_legacy(config_dir: &Path, opts: ValidateOpts) -> Result<Report, 
             "schema validation is not implemented".to_string(),
         );
     }
-    if opts.env_allow == Some(true) || opts.env_mask_logs == Some(true) {
-        let mut details = Vec::new();
-        if let Some(value) = opts.env_allow.filter(|v| *v) {
-            details.push(format!("env_allow={value}"));
-        }
-        if let Some(value) = opts.env_mask_logs.filter(|v| *v) {
-            details.push(format!("env_mask_logs={value}"));
-        }
-        let message = if details.is_empty() {
-            "env flags are not implemented for validation".to_string()
-        } else {
-            format!(
-                "env flags are not implemented for validation ({})",
-                details.join(", ")
-            )
-        };
-        report.warn_or_error(
-            opts.strict,
-            "validate".to_string(),
-            "$.env".to_string(),
-            "env-flags-not-implemented",
-            message,
-        );
-    }
 
     let palettes_path = opts
         .palettes_path
@@ -582,9 +550,23 @@ fn validate_dir_legacy(config_dir: &Path, opts: ValidateOpts) -> Result<Report, 
                     opts.strict,
                 );
 
+                // Validate env: placeholders separately.
+                validate_env_placeholders(
+                    &uses,
+                    &file_display,
+                    &mut report,
+                    opts.strict,
+                    opts.env_allow,
+                );
+
                 if let Some(info) = palette_info.as_ref() {
+                    let palette_uses: Vec<PlaceholderUse> = uses
+                        .iter()
+                        .filter(|u| !u.key.starts_with("env:"))
+                        .cloned()
+                        .collect();
                     validate_placeholders(
-                        &uses,
+                        &palette_uses,
                         &info.palettes,
                         &file_display,
                         &mut report,
@@ -948,6 +930,53 @@ fn scan_placeholders(
             }
         }
         _ => {}
+    }
+}
+
+fn validate_env_placeholders(
+    uses: &[PlaceholderUse],
+    file: &str,
+    report: &mut ReportBuilder,
+    strict: bool,
+    env_allow: Option<bool>,
+) {
+    for usage in uses.iter().filter(|u| u.key.starts_with("env:")) {
+        if env_allow != Some(true) {
+            report.push(
+                Severity::Error,
+                file.to_string(),
+                usage.path.clone(),
+                "env-not-allowed",
+                format!(
+                    "env placeholder '{}' requires --env-allow to be enabled",
+                    usage.key
+                ),
+            );
+        } else {
+            let var_name = usage
+                .key
+                .strip_prefix("env:")
+                .expect("env: prefix already checked");
+            match std::env::var(var_name) {
+                Ok(_) => {
+                    // Variable exists; no finding emitted.
+                }
+                Err(_) => {
+                    // TODO: when env_mask_logs support is added, redact
+                    // variable names/values in diagnostic output here.
+                    report.warn_or_error(
+                        strict,
+                        file.to_string(),
+                        usage.path.clone(),
+                        "env-missing",
+                        format!(
+                            "environment variable '{}' referenced by placeholder '{}' is not set",
+                            var_name, usage.key
+                        ),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1316,7 +1345,7 @@ palettes:
     }
 
     #[test]
-    fn validate_warns_on_env_flags() {
+    fn validate_no_env_flags_not_implemented_with_env_allow() {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path();
         write_palettes(config_dir);
@@ -1336,12 +1365,12 @@ palettes:
         };
 
         let report = validate_dir(config_dir, opts).expect("validate");
-        assert_eq!(report.counts.errors, 0);
         assert!(
             report
                 .findings
                 .iter()
-                .any(|f| f.kind == "env-flags-not-implemented")
+                .all(|f| f.kind != "env-flags-not-implemented"),
+            "old env-flags-not-implemented stub should be removed"
         );
     }
 
@@ -1666,6 +1695,219 @@ palettes:
                 .iter()
                 .all(|f| !f.message.contains("[palette: alt]")),
             "palette 'alt' should not trigger schema violations for agent 'build'"
+        );
+    }
+
+    // -- env-placeholder validation tests ---------------------------------
+
+    /// Helper: write a template containing an `env:` placeholder.
+    fn write_env_template(config_dir: &Path, name: &str, env_key: &str) {
+        write_template(
+            config_dir,
+            name,
+            &format!(r#"{{ "agent": {{ "build": {{ "model": "{{{{env:{env_key}}}}}" }} }} }}"#),
+        );
+    }
+
+    #[test]
+    fn validate_env_placeholder_not_allowed() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_env_template(config_dir, "env.json", "SECRET");
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report.findings.iter().find(|f| f.kind == "env-not-allowed");
+        assert!(
+            finding.is_some(),
+            "expected env-not-allowed finding, got: {:?}",
+            report.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        let finding = finding.unwrap();
+        assert_eq!(finding.severity, Severity::Error);
+        assert!(finding.message.contains("env:SECRET"));
+    }
+
+    #[test]
+    fn validate_env_placeholder_not_allowed_explicit_false() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_env_template(config_dir, "env.json", "SECRET");
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: Some(false),
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report.findings.iter().find(|f| f.kind == "env-not-allowed");
+        assert!(
+            finding.is_some(),
+            "expected env-not-allowed finding when env_allow=Some(false)"
+        );
+        assert_eq!(finding.unwrap().severity, Severity::Error);
+    }
+
+    #[test]
+    fn validate_env_placeholder_allowed_but_missing() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // Use a unique var name that is almost certainly not set.
+        let var_name = "OPENCODE_TEST_VALIDATE_MISSING_29a7c3";
+        // Safety: ensure the variable is not set.
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+        write_env_template(config_dir, "env.json", var_name);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: Some(true),
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report.findings.iter().find(|f| f.kind == "env-missing");
+        assert!(
+            finding.is_some(),
+            "expected env-missing finding, got: {:?}",
+            report.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        let finding = finding.unwrap();
+        assert_eq!(
+            finding.severity,
+            Severity::Warning,
+            "env-missing should be a warning in non-strict mode"
+        );
+        assert!(finding.message.contains(var_name));
+    }
+
+    #[test]
+    fn validate_env_placeholder_missing_strict_is_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        let var_name = "OPENCODE_TEST_VALIDATE_STRICT_MISSING_f4e1b8";
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+        write_env_template(config_dir, "env.json", var_name);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: true,
+            env_allow: Some(true),
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report.findings.iter().find(|f| f.kind == "env-missing");
+        assert!(
+            finding.is_some(),
+            "expected env-missing finding in strict mode"
+        );
+        assert_eq!(
+            finding.unwrap().severity,
+            Severity::Error,
+            "env-missing should be promoted to error in strict mode"
+        );
+    }
+
+    #[test]
+    fn validate_env_placeholder_allowed_and_present() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        let var_name = "OPENCODE_TEST_VALIDATE_PRESENT_8b3d42";
+        unsafe {
+            std::env::set_var(var_name, "test-value");
+        }
+        write_env_template(config_dir, "env.json", var_name);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: Some(true),
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+
+        // Clean up before assertions so the var doesn't leak on failure.
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "env-missing" && f.kind != "env-not-allowed"),
+            "present env var should produce no env findings, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind.starts_with("env"))
+                .map(|f| format!("{}: {}", f.kind, f.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_env_placeholder_excluded_from_palette_lookup() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        let var_name = "OPENCODE_TEST_VALIDATE_PALETTE_EXCL_c7a912";
+        unsafe {
+            std::env::set_var(var_name, "value");
+        }
+        write_env_template(config_dir, "env.json", var_name);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: Some(true),
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        unsafe {
+            std::env::remove_var(var_name);
+        }
+
+        // env: placeholders must not appear as unknown-placeholder errors
+        // (they should be handled by env validation, not palette lookup).
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "unknown-placeholder"),
+            "env placeholder should not fall through to palette lookup"
         );
     }
 }
