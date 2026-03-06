@@ -10,7 +10,7 @@
 //!   ┌───────────┐
 //!   │   Start   │
 //!   └─────┬─────┘
-//!         │ warn_env_flags() / ensure_output()   [self-transitions]
+//!         │ ensure_output()   [self-transition]
 //!         │ select_palette()
 //!         v
 //!  ┌──────────────────┐
@@ -31,6 +31,11 @@
 //!  ┌──────────────────┐
 //!  │  MappingBuilt    │
 //!  └────────┬─────────┘
+//!           │ resolve_env_vars()
+//!           v
+//!  ┌──────────────────┐
+//!  │  EnvResolved     │
+//!  └────────┬─────────┘
 //!           │ substitute_placeholders()
 //!           v
 //!  ┌──────────────────┐
@@ -47,11 +52,13 @@
 
 use std::collections::HashMap;
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::config::{Palette, load_model_configs};
 use crate::create::{CreateError, CreateOptions};
-use crate::substitute::substitute;
+use crate::env_resolve::{Allow, EnvResolver, ResolveError};
+use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
     apply_alias_models, build_mapping, is_valid_template_name, load_template,
     resolve_template_name_path, write_json_pretty,
@@ -78,6 +85,10 @@ pub struct MappingBuilt {
     template_value: Value,
     mapping: HashMap<String, Value>,
 }
+pub struct EnvResolved {
+    template_value: Value,
+    mapping: HashMap<String, Value>,
+}
 pub struct FinalReady {
     template_value: Value,
 }
@@ -100,24 +111,14 @@ impl CreateBuilder<Start> {
     }
 
     pub fn run(self) -> Result<(), CreateError> {
-        let builder = self.warn_env_flags()?;
-        let builder = builder.ensure_output()?;
+        let builder = self.ensure_output()?;
         let builder = builder.select_palette()?;
         let builder = builder.load_template()?;
         let builder = builder.apply_aliases()?;
         let builder = builder.build_mapping()?;
+        let builder = builder.resolve_env_vars()?;
         let builder = builder.substitute_placeholders()?;
         builder.write_output()
-    }
-
-    pub fn warn_env_flags(self) -> Result<Self, CreateError> {
-        if self.options.run_options.env_allow {
-            eprintln!("warning: --env-allow is currently unsupported for create/switch");
-        }
-        if self.options.run_options.env_mask_logs {
-            eprintln!("warning: --env-mask-logs is currently unsupported for create/switch");
-        }
-        Ok(self)
     }
 
     pub fn ensure_output(self) -> Result<Self, CreateError> {
@@ -202,10 +203,70 @@ impl CreateBuilder<AliasesApplied> {
 }
 
 impl CreateBuilder<MappingBuilt> {
-    pub fn substitute_placeholders(self) -> Result<CreateBuilder<FinalReady>, CreateError> {
+    /// Resolve `{{env:VAR}}` placeholders by looking up environment variables.
+    ///
+    /// When `env_allow` is active, the template is scanned for placeholder
+    /// keys starting with `env:`.  Each matching variable is looked up in the
+    /// OS environment via [`EnvResolver`] and the resolved values are merged
+    /// directly into the main `mapping` as `Value::String` entries.
+    ///
+    /// When `env_allow` is **not** active the step is a no-op pass-through —
+    /// any `{{env:…}}` placeholders are left for the substitution engine to
+    /// handle (left unresolved in permissive mode, error in strict mode).
+    pub fn resolve_env_vars(self) -> Result<CreateBuilder<EnvResolved>, CreateError> {
         let CreateBuilder { options, state } = self;
 
         let MappingBuilt {
+            template_value,
+            mut mapping,
+        } = state;
+
+        if options.run_options.env_allow {
+            let env_keys = collect_env_placeholder_keys(&template_value);
+            if !env_keys.is_empty() {
+                let synthetic: HashMap<String, String> =
+                    env_keys.into_iter().map(|k| (k.clone(), k)).collect();
+
+                let resolver = EnvResolver::new(
+                    Allow::All,
+                    options.run_options.strict,
+                    options.run_options.env_mask_logs,
+                );
+
+                let resolved = resolver.resolve(&synthetic).map_err(|e| match e {
+                    ResolveError::MissingEnvVar { var } => {
+                        CreateError::Substitute(SubstituteError::MissingPlaceholder {
+                            key: format!("env:{var}"),
+                        })
+                    }
+                    ResolveError::NotAllowed { var } => {
+                        CreateError::Substitute(SubstituteError::MissingPlaceholder {
+                            key: format!("env:{var}"),
+                        })
+                    }
+                })?;
+
+                for (key, value) in resolved {
+                    mapping.insert(key, Value::String(value));
+                }
+            }
+        }
+
+        Ok(CreateBuilder {
+            options,
+            state: EnvResolved {
+                template_value,
+                mapping,
+            },
+        })
+    }
+}
+
+impl CreateBuilder<EnvResolved> {
+    pub fn substitute_placeholders(self) -> Result<CreateBuilder<FinalReady>, CreateError> {
+        let CreateBuilder { options, state } = self;
+
+        let EnvResolved {
             mut template_value,
             mapping,
         } = state;
@@ -230,11 +291,54 @@ impl CreateBuilder<FinalReady> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Collect all unique `env:VAR` placeholder keys from a JSON value.
+///
+/// Scans strings recursively for `{{ env:VAR }}` patterns and returns the
+/// inner key (e.g. `env:MY_VAR`) with surrounding whitespace trimmed.
+fn collect_env_placeholder_keys(value: &Value) -> Vec<String> {
+    let re = Regex::new(r"\{\{\s*(env:[^\}]+?)\s*\}\}").expect("env placeholder regex");
+    let mut keys = Vec::new();
+    collect_env_keys(value, &re, &mut keys);
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn collect_env_keys(value: &Value, re: &Regex, keys: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            for cap in re.captures_iter(s) {
+                if let Some(m) = cap.get(1) {
+                    keys.push(m.as_str().trim().to_string());
+                }
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_env_keys(v, re, keys);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_env_keys(v, re, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::env;
+    use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use tempfile::TempDir;
 
@@ -242,6 +346,61 @@ mod tests {
     use crate::config::{AgentConfig, ModelConfigs, Palette};
     use crate::create::{CreateError, CreateOptions};
     use crate::options::RunOptions;
+
+    // ------------------------------------------------------------------
+    // Environment safety helpers (mirrors src/options.rs pattern)
+    // ------------------------------------------------------------------
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock env")
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn new(key: &'static str) -> Self {
+            let previous = env::var_os(key);
+            Self { key, previous }
+        }
+
+        fn set(&self, value: &str) {
+            unsafe {
+                env::set_var(self.key, value);
+            }
+        }
+
+        fn remove(&self) {
+            unsafe {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                unsafe {
+                    env::set_var(self.key, value);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Test helpers
+    // ------------------------------------------------------------------
 
     fn write_template(dir: &TempDir, name: &str, contents: &str) {
         let template_dir = dir.path().join("template.d");
@@ -279,6 +438,23 @@ mod tests {
         }
     }
 
+    fn make_options_with_run(
+        config_dir: &Path,
+        out: &Path,
+        template: &str,
+        palette: &str,
+        run_options: RunOptions,
+    ) -> CreateOptions {
+        CreateOptions {
+            template: template.to_string(),
+            palette: palette.to_string(),
+            out: out.to_path_buf(),
+            force: false,
+            run_options,
+            config_dir: config_dir.to_path_buf(),
+        }
+    }
+
     fn single_agent_configs() -> ModelConfigs {
         ModelConfigs {
             palettes: BTreeMap::from([(
@@ -297,6 +473,10 @@ mod tests {
             )]),
         }
     }
+
+    // ------------------------------------------------------------------
+    // Existing tests
+    // ------------------------------------------------------------------
 
     #[test]
     fn new_builder_stores_options() {
@@ -453,5 +633,297 @@ mod tests {
             Err(other) => panic!("expected InvalidTemplateName, got: {other:?}"),
             Ok(_) => panic!("expected error for template name with extension"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Env-resolution tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn env_resolved_with_env_allow() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_A");
+        guard.set("secret-value");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{
+                "agent": {
+                    "build": {
+                        "model": "{{agent-build-model}}",
+                        "apiKey": "{{env:OCFG_CREATE_TEST_A}}"
+                    }
+                }
+            }"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: true,
+                env_mask_logs: false,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("run should succeed");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
+        assert_eq!(value["agent"]["build"]["apiKey"], "secret-value");
+    }
+
+    #[test]
+    fn env_not_resolved_without_env_allow() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_B");
+        guard.set("should-not-appear");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{
+                "agent": {
+                    "build": {
+                        "model": "{{agent-build-model}}",
+                        "apiKey": "{{env:OCFG_CREATE_TEST_B}}"
+                    }
+                }
+            }"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: false,
+                env_mask_logs: false,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("run should succeed in permissive mode");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        // env placeholder should be left unresolved
+        assert_eq!(
+            value["agent"]["build"]["apiKey"],
+            "{{env:OCFG_CREATE_TEST_B}}"
+        );
+    }
+
+    #[test]
+    fn env_strict_errors_on_missing_var() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_C");
+        guard.remove();
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{"apiKey": "{{env:OCFG_CREATE_TEST_C}}"}"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: true,
+                env_allow: true,
+                env_mask_logs: false,
+            },
+        );
+
+        let err = CreateBuilder::new(options)
+            .run()
+            .expect_err("should fail on missing env var in strict mode");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("env") && msg.contains("OCFG_CREATE_TEST_C"),
+            "error should mention the missing env var, got: {msg}",
+        );
+    }
+
+    #[test]
+    fn env_missing_var_permissive_leaves_placeholder() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_D");
+        guard.remove();
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{"apiKey": "{{env:OCFG_CREATE_TEST_D}}"}"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: true,
+                env_mask_logs: false,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("permissive mode should succeed");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(
+            value["apiKey"], "{{env:OCFG_CREATE_TEST_D}}",
+            "unresolved env placeholder should be left as-is",
+        );
+    }
+
+    #[test]
+    fn env_no_placeholders_passthrough() {
+        // Template without env: placeholders should pass through unchanged.
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "plain.json",
+            r#"{"model": "{{agent-build-model}}"}"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "plain",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: true,
+                env_mask_logs: false,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("run should succeed");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["model"], "openrouter/openai/gpt-4o");
+    }
+
+    #[test]
+    fn env_mask_logs_does_not_affect_output() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_MASK");
+        guard.set("sk-abc123secret");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{"apiKey": "{{env:OCFG_CREATE_TEST_MASK}}"}"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: true,
+                env_mask_logs: true,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("run should succeed");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        // Output must contain the full value, not a masked version.
+        assert_eq!(value["apiKey"], "sk-abc123secret");
+    }
+
+    #[test]
+    fn env_inline_placeholder_resolved() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_CREATE_TEST_INLINE");
+        guard.set("example.com");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(&config_dir, &single_agent_configs());
+        write_template(
+            &config_dir,
+            "envtest.json",
+            r#"{"url": "https://{{env:OCFG_CREATE_TEST_INLINE}}/api"}"#,
+        );
+
+        let work_dir = TempDir::new().expect("work dir");
+        let out_path = work_dir.path().join("opencode.json");
+
+        let options = make_options_with_run(
+            config_dir.path(),
+            &out_path,
+            "envtest",
+            "default",
+            RunOptions {
+                strict: false,
+                env_allow: true,
+                env_mask_logs: false,
+            },
+        );
+
+        CreateBuilder::new(options)
+            .run()
+            .expect("run should succeed");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["url"], "https://example.com/api");
     }
 }

@@ -22,6 +22,9 @@
 //!    │  build_mapping()
 //!    ▼
 //!  MappingBuilt
+//!    │  resolve_env_vars()
+//!    ▼
+//!  EnvResolved
 //!    │  substitute_placeholders()
 //!    ▼
 //!  Substituted
@@ -46,7 +49,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use crate::config::{Palette, load_model_configs};
-use crate::substitute::substitute;
+use crate::env_resolve::{Allow, EnvResolver, ResolveError};
+use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
     apply_alias_models, build_mapping, is_valid_template_name, list_templates, load_template,
     resolve_template_name_path, write_json_pretty,
@@ -81,6 +85,10 @@ pub struct MappingBuilt {
     template_value: Value,
     mapping: HashMap<String, Value>,
 }
+pub(crate) struct EnvResolved {
+    template_value: Value,
+    mapping: HashMap<String, Value>,
+}
 pub(crate) struct Substituted {
     template_value: Value,
 }
@@ -103,10 +111,6 @@ impl<'a> WizardBuilder<'a, Start> {
     }
 
     pub(crate) fn run(self) -> Result<(), WizardError> {
-        if self.options.run_options.env_allow || self.options.run_options.env_mask_logs {
-            eprintln!("warning: env placeholders are not supported in the wizard");
-        }
-
         if self.options.out.exists() && !self.options.force {
             return Err(WizardError::OutputExists {
                 path: self.options.out.clone(),
@@ -118,6 +122,7 @@ impl<'a> WizardBuilder<'a, Start> {
         let builder = builder.load_template()?;
         let builder = builder.apply_overrides()?;
         let builder = builder.build_mapping()?;
+        let builder = builder.resolve_env_vars()?;
         let builder = builder.substitute_placeholders()?;
         let builder = builder.write_draft()?;
         let builder = builder.maybe_open_editor()?;
@@ -277,6 +282,58 @@ impl<'a> WizardBuilder<'a, OverridesApplied> {
 }
 
 impl<'a> WizardBuilder<'a, MappingBuilt> {
+    pub(crate) fn resolve_env_vars(self) -> Result<WizardBuilder<'a, EnvResolved>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let MappingBuilt {
+            template_value,
+            mut mapping,
+        } = state;
+
+        let env_allow = options.run_options.env_allow;
+        let strict = options.run_options.strict;
+        let mask_logs = options.run_options.env_mask_logs;
+
+        if env_allow {
+            let placeholders = collect_placeholders(&template_value)?;
+            let env_entries: HashMap<String, String> = placeholders
+                .iter()
+                .filter(|k| k.starts_with("env:"))
+                .map(|k| (k.clone(), k.clone()))
+                .collect();
+
+            if !env_entries.is_empty() {
+                let resolver = EnvResolver::new(Allow::All, strict, mask_logs);
+                let resolved = resolver.resolve(&env_entries).map_err(|err| {
+                    let key = match err {
+                        ResolveError::NotAllowed { var } => {
+                            format!("env:{var} (requires --env-allow)")
+                        }
+                        ResolveError::MissingEnvVar { var } => format!("env:{var}"),
+                    };
+                    WizardError::Substitute(SubstituteError::MissingPlaceholder { key })
+                })?;
+                for (key, value) in resolved {
+                    mapping.insert(key, Value::String(value));
+                }
+            }
+        }
+
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: EnvResolved {
+                template_value,
+                mapping,
+            },
+        })
+    }
+}
+
+impl<'a> WizardBuilder<'a, EnvResolved> {
     pub(crate) fn substitute_placeholders(
         self,
     ) -> Result<WizardBuilder<'a, Substituted>, WizardError> {
@@ -285,7 +342,7 @@ impl<'a> WizardBuilder<'a, MappingBuilt> {
             prompter,
             state,
         } = self;
-        let MappingBuilt {
+        let EnvResolved {
             mut template_value,
             mapping,
         } = state;

@@ -40,6 +40,11 @@
 //!  ┌───────────────────────┐
 //!  │    MappingBuilt       │
 //!  └──────────┬────────────┘
+//!             │ resolve_env_vars()
+//!             v
+//!  ┌───────────────────────┐
+//!  │    EnvResolved        │
+//!  └──────────┬────────────┘
 //!             │ substitute()
 //!             v
 //!  ┌───────────────────────┐
@@ -57,11 +62,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use regex::Regex;
 use serde_json::Value;
 
 use crate::config::{ModelConfigs, Palette, load_model_configs};
+use crate::env_resolve::{Allow, EnvResolver};
 use crate::render::{OutputFormat, RenderError, RenderOptions, RenderOutput};
-use crate::substitute::substitute;
+use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
     apply_alias_models, build_mapping, load_template, resolve_template_path_allowing_path,
 };
@@ -94,18 +101,16 @@ pub(crate) struct MappingBuilt {
     template_value: Value,
     mapping: HashMap<String, Value>,
 }
+pub(crate) struct EnvResolved {
+    template_value: Value,
+    mapping: HashMap<String, Value>,
+}
 pub(crate) struct Substituted {
     template_value: Value,
 }
 
 impl RenderBuilder<Start> {
     pub(crate) fn new(options: RenderOptions) -> Self {
-        if options.env_allow {
-            eprintln!("warning: --env-allow is currently a no-op");
-        }
-        if options.env_mask_logs {
-            eprintln!("warning: --env-mask-logs is currently a no-op");
-        }
         Self {
             options,
             state: Start,
@@ -212,9 +217,57 @@ impl RenderBuilder<AliasesApplied> {
 }
 
 impl RenderBuilder<MappingBuilt> {
-    pub(crate) fn substitute(self) -> Result<RenderBuilder<Substituted>, RenderError> {
+    /// Resolve `env:*` placeholders found in the template via [`EnvResolver`].
+    ///
+    /// Resolved values are merged directly into the main `mapping` as
+    /// `Value::String` entries so that the substitution step can use the
+    /// unified mapping without a separate env side-channel.
+    ///
+    /// When `env_allow` is `false`, this is a no-op pass-through.
+    pub(crate) fn resolve_env_vars(self) -> Result<RenderBuilder<EnvResolved>, RenderError> {
         let RenderBuilder { options, state } = self;
         let MappingBuilt {
+            template_value,
+            mut mapping,
+        } = state;
+
+        if options.env_allow {
+            let env_placeholders = collect_env_placeholders(&template_value);
+            if !env_placeholders.is_empty() {
+                let resolver = EnvResolver::new(Allow::All, options.strict, options.env_mask_logs);
+                let resolved = resolver
+                    .resolve(&env_placeholders)
+                    .map_err(resolve_to_render_error)?;
+                for (key, value) in &resolved {
+                    mapping.insert(key.clone(), Value::String(value.clone()));
+                }
+            }
+        }
+
+        Ok(RenderBuilder {
+            options,
+            state: EnvResolved {
+                template_value,
+                mapping,
+            },
+        })
+    }
+
+    /// Backward-compatible substitute that internally chains through env
+    /// resolution.  This keeps the call chain in [`crate::render::render()`]
+    /// (`…build_mapping()?.substitute()?.serialize()`) working without edits
+    /// to `src/render.rs`.
+    pub(crate) fn substitute(self) -> Result<RenderBuilder<Substituted>, RenderError> {
+        self.resolve_env_vars()?.substitute()
+    }
+}
+
+impl RenderBuilder<EnvResolved> {
+    /// Substitute placeholders in the template using the unified mapping
+    /// (model-config entries merged with any resolved environment values).
+    pub(crate) fn substitute(self) -> Result<RenderBuilder<Substituted>, RenderError> {
+        let RenderBuilder { options, state } = self;
+        let EnvResolved {
             mut template_value,
             mapping,
         } = state;
@@ -245,12 +298,69 @@ fn serialize_output(value: &Value, format: OutputFormat) -> Result<String, Rende
     }
 }
 
+/// Scan a JSON value for all `env:*` placeholder keys and return a mapping
+/// suitable for [`EnvResolver::resolve`].
+///
+/// Each entry maps `"env:VAR"` → `"env:VAR"` so that the resolver sees the
+/// `env:` prefix in the *value*, strips it, and resolves the OS variable.
+/// The result is keyed by the original placeholder key (`"env:VAR"`) which
+/// lines up with what `substitute_with_env` expects.
+fn collect_env_placeholders(value: &Value) -> HashMap<String, String> {
+    let re = Regex::new(r"\{\{\s*([^\}]+?)\s*\}\}").expect("placeholder regex");
+    let mut result = HashMap::new();
+    collect_env_walk(value, &re, &mut result);
+    result
+}
+
+fn collect_env_walk(value: &Value, re: &Regex, out: &mut HashMap<String, String>) {
+    match value {
+        Value::String(s) => {
+            for cap in re.captures_iter(s) {
+                let key = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                if key.starts_with("env:") {
+                    out.insert(key.to_string(), key.to_string());
+                }
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_env_walk(v, re, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_env_walk(item, re, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Map [`crate::env_resolve::ResolveError`] to [`RenderError`] by converting
+/// to [`SubstituteError::MissingPlaceholder`] with a stable `env:{var}` key.
+///
+/// We cannot add variants to `RenderError` (render.rs is out of scope), so we
+/// re-use the existing `Substitute` variant.  The key carries structured
+/// `env:{var}` semantics rather than the raw `Display` output of the error so
+/// that consumers can parse or match on it predictably.
+fn resolve_to_render_error(err: crate::env_resolve::ResolveError) -> RenderError {
+    use crate::env_resolve::ResolveError;
+    let key = match err {
+        ResolveError::NotAllowed { var } => format!("env:{var} (requires --env-allow)"),
+        ResolveError::MissingEnvVar { var } => format!("env:{var}"),
+    };
+    RenderError::Substitute(SubstituteError::MissingPlaceholder { key })
+}
+
 // Template resolution is centralized in template.rs to keep behavior consistent.
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+    use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use serde_json::Value;
     use tempfile::TempDir;
@@ -258,6 +368,61 @@ mod tests {
     use crate::render::{OutputFormat, RenderError, RenderOptions};
 
     use super::RenderBuilder;
+
+    // ------------------------------------------------------------------
+    // Environment safety helpers
+    // ------------------------------------------------------------------
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("lock env")
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn new(key: &'static str) -> Self {
+            let previous = env::var_os(key);
+            Self { key, previous }
+        }
+
+        fn set(&self, value: &str) {
+            unsafe {
+                env::set_var(self.key, value);
+            }
+        }
+
+        fn remove(&self) {
+            unsafe {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                unsafe {
+                    env::set_var(self.key, value);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(self.key);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Fixtures
+    // ------------------------------------------------------------------
 
     const SAMPLE_YAML: &str = r#"
 palettes:
@@ -274,6 +439,17 @@ palettes:
     "build": {
       "model": "{{build}}",
       "variant": "{{build-variant}}"
+    }
+  },
+  "description": "Build uses {{build}}"
+}"#;
+
+    const ENV_TEMPLATE: &str = r#"{
+  "agent": {
+    "build": {
+      "model": "{{build}}",
+      "variant": "{{build-variant}}",
+      "apiKey": "{{env:OCFG_TEST_API_KEY}}"
     }
   },
   "description": "Build uses {{build}}"
@@ -300,6 +476,10 @@ palettes:
             config_dir: config_dir.to_path_buf(),
         }
     }
+
+    // ------------------------------------------------------------------
+    // Existing tests (unchanged)
+    // ------------------------------------------------------------------
 
     #[test]
     fn end_to_end_render_outputs_json() {
@@ -430,5 +610,244 @@ palettes:
         let value: Value = serde_json::from_str(&output.data).expect("parse json");
         assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
         assert_eq!(value["description"], "Build uses openrouter/openai/gpt-4o");
+    }
+
+    // ------------------------------------------------------------------
+    // New env-resolution tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn env_allowed_and_present_resolves_value() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        guard.set("sk-test-secret-123");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars()
+            .expect("resolve env vars")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let value: Value = serde_json::from_str(&output.data).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], "sk-test-secret-123",
+            "env placeholder should be resolved"
+        );
+        assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
+    }
+
+    #[test]
+    fn env_not_allowed_leaves_placeholder() {
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = false;
+
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars()
+            .expect("resolve env vars")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let value: Value = serde_json::from_str(&output.data).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], "{{env:OCFG_TEST_API_KEY}}",
+            "env placeholder should be left unresolved when env_allow is false"
+        );
+    }
+
+    #[test]
+    fn env_strict_missing_var_returns_error() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        guard.remove();
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+        opts.strict = true;
+
+        let result = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars();
+
+        assert!(
+            result.is_err(),
+            "strict mode + missing env var should error"
+        );
+    }
+
+    #[test]
+    fn env_non_strict_missing_var_leaves_placeholder() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        guard.remove();
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+        opts.strict = false;
+
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars()
+            .expect("resolve env vars")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let value: Value = serde_json::from_str(&output.data).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], "{{env:OCFG_TEST_API_KEY}}",
+            "non-strict + missing env var should leave placeholder"
+        );
+    }
+
+    #[test]
+    fn env_mask_logs_does_not_affect_output() {
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        guard.set("sk-secret-value-abc");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+        opts.env_mask_logs = true;
+
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars()
+            .expect("resolve env vars")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let value: Value = serde_json::from_str(&output.data).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], "sk-secret-value-abc",
+            "env_mask_logs must not affect the rendered output"
+        );
+    }
+
+    #[test]
+    fn backward_compat_substitute_on_mapping_built() {
+        // Verify that calling .substitute() directly on MappingBuilt still
+        // works (chains through resolve_env_vars internally).
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        guard.set("compat-value");
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+
+        // Use the backward-compatible .substitute() on MappingBuilt
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let value: Value = serde_json::from_str(&output.data).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], "compat-value",
+            "backward-compat substitute() should resolve env vars"
+        );
     }
 }

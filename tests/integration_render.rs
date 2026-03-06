@@ -26,6 +26,18 @@ const DEFAULT_TEMPLATE: &str = r#"{
 }
 "#;
 
+const ENV_TEMPLATE: &str = r#"{
+  "agent": {
+    "build": {
+      "model": "{{build}}",
+      "variant": "{{build-variant}}",
+      "apiKey": "{{env:OCFG_INTEG_RENDER_KEY}}"
+    }
+  },
+  "description": "Build uses {{build}}"
+}
+"#;
+
 fn write_config(config_dir: &Path) {
     fs::write(config_dir.join("model-configs.yaml"), SAMPLE_YAML)
         .expect("write model-configs.yaml");
@@ -33,6 +45,15 @@ fn write_config(config_dir: &Path) {
     let template_dir = config_dir.join("template.d");
     fs::create_dir_all(&template_dir).expect("create template dir");
     fs::write(template_dir.join("default.json"), DEFAULT_TEMPLATE).expect("write template");
+}
+
+fn write_env_config(config_dir: &Path) {
+    fs::write(config_dir.join("model-configs.yaml"), SAMPLE_YAML)
+        .expect("write model-configs.yaml");
+
+    let template_dir = config_dir.join("template.d");
+    fs::create_dir_all(&template_dir).expect("create template dir");
+    fs::write(template_dir.join("env-test.json"), ENV_TEMPLATE).expect("write env template");
 }
 
 #[test]
@@ -304,5 +325,146 @@ fn render_dry_run_stdout_unchanged() {
     assert!(
         !stdout.contains("+++ "),
         "stdout mode should not contain diff headers, got: {stdout}"
+    );
+}
+
+// ------------------------------------------------------------------
+// Environment placeholder integration tests
+// ------------------------------------------------------------------
+
+#[test]
+fn render_env_allow_resolves_env_placeholder() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_env_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    let assert = cmd
+        .current_dir(work_dir.path())
+        .env("OCFG_INTEG_RENDER_KEY", "sk-integration-secret")
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("render")
+        .arg("--template")
+        .arg("env-test")
+        .arg("--palette")
+        .arg("default")
+        .arg("--format")
+        .arg("json")
+        .arg("--out")
+        .arg("-")
+        .arg("--env-allow")
+        .assert()
+        .success();
+
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(output.trim()).expect("parse json");
+    assert_eq!(
+        value["agent"]["build"]["apiKey"], "sk-integration-secret",
+        "env placeholder should resolve when --env-allow is set"
+    );
+    assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
+}
+
+#[test]
+fn render_without_env_allow_leaves_placeholder() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_env_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    let assert = cmd
+        .current_dir(work_dir.path())
+        .env("OCFG_INTEG_RENDER_KEY", "should-not-appear")
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("render")
+        .arg("--template")
+        .arg("env-test")
+        .arg("--palette")
+        .arg("default")
+        .arg("--format")
+        .arg("json")
+        .arg("--out")
+        .arg("-")
+        .assert()
+        .success();
+
+    let output = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(output.trim()).expect("parse json");
+    assert_eq!(
+        value["agent"]["build"]["apiKey"], "{{env:OCFG_INTEG_RENDER_KEY}}",
+        "env placeholder should remain when --env-allow is not set"
+    );
+}
+
+#[test]
+fn render_env_allow_strict_missing_var_fails() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_env_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .env_remove("OCFG_INTEG_RENDER_KEY")
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("render")
+        .arg("--template")
+        .arg("env-test")
+        .arg("--palette")
+        .arg("default")
+        .arg("--format")
+        .arg("json")
+        .arg("--out")
+        .arg("-")
+        .arg("--env-allow")
+        .arg("--strict")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn render_env_mask_logs_does_not_alter_output() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_env_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+
+    let secret = "sk-mask-test-value";
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    let assert = cmd
+        .current_dir(work_dir.path())
+        .env("OCFG_INTEG_RENDER_KEY", secret)
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("render")
+        .arg("--template")
+        .arg("env-test")
+        .arg("--palette")
+        .arg("default")
+        .arg("--format")
+        .arg("json")
+        .arg("--out")
+        .arg("-")
+        .arg("--env-allow")
+        .arg("--env-mask-logs")
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+
+    // Output must contain the resolved secret — masking only applies to logs.
+    let value: Value = serde_json::from_str(stdout.trim()).expect("parse json");
+    assert_eq!(
+        value["agent"]["build"]["apiKey"], secret,
+        "env_mask_logs must not affect rendered output content"
+    );
+
+    // The raw secret value must NOT appear in stderr / log output.
+    assert!(
+        !stderr.contains(secret),
+        "raw secret must not leak to stderr when --env-mask-logs is active, got: {stderr}"
     );
 }
