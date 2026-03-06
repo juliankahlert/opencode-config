@@ -1,3 +1,32 @@
+//! Template and palette validation engine.
+//!
+//! This module checks template files and model-config palettes for
+//! structural errors, unknown placeholders, ambiguous aliases, and
+//! missing model fields.  Results are collected into a [`Report`]
+//! containing [`Finding`]s at either [`Severity::Error`] or
+//! [`Severity::Warning`] level.
+//!
+//! Internally a `ValidatorBuilder` typestate drives the pipeline:
+//!
+//! ```text
+//!  Start
+//!    │
+//!    ▼
+//!  PalettesLoaded      load & parse model-configs.yaml
+//!    │
+//!    ▼
+//!  TemplatesDiscovered  resolve glob / explicit template paths
+//!    │
+//!    ▼
+//!  PlaceholdersScanned  walk JSON values, collect {{…}} uses
+//!    │
+//!    ▼
+//!  ReportReady          cross-check placeholders against palette
+//!    │
+//!    ▼
+//!  Report               final counts + findings list
+//! ```
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +38,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::config::{AgentConfig, ModelConfigs, Palette, Reasoning};
-use crate::template::{TemplateError, load_template};
+use crate::template::{load_template, TemplateError};
 
 #[derive(Debug, Clone)]
 pub struct ValidateOpts {
@@ -1115,12 +1144,10 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert!(report.counts.errors > 0);
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.kind == "unknown-placeholder")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.kind == "unknown-placeholder"));
     }
 
     #[test]
@@ -1184,12 +1211,10 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert_eq!(report.counts.errors, 0);
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.kind == "schema-not-implemented")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.kind == "schema-not-implemented"));
     }
 
     #[test]
@@ -1214,12 +1239,10 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert_eq!(report.counts.errors, 0);
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.kind == "env-flags-not-implemented")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.kind == "env-flags-not-implemented"));
     }
 
     #[test]
@@ -1243,12 +1266,10 @@ palettes:
         };
 
         let report = validate_dir(config_dir, opts).expect("validate");
-        assert!(
-            report
-                .findings
-                .iter()
-                .all(|f| f.kind != "env-flags-not-implemented")
-        );
+        assert!(report
+            .findings
+            .iter()
+            .all(|f| f.kind != "env-flags-not-implemented"));
     }
 
     #[test]

@@ -1,3 +1,50 @@
+//! Typestate builder for the `create` command.
+//!
+//! [`CreateBuilder`] uses the typestate pattern to enforce a compile-time
+//! valid ordering of steps when generating an `opencode.json` file from a
+//! template and a model-config palette.
+//!
+//! # State-transition diagram
+//!
+//! ```text
+//!   ┌───────────┐
+//!   │   Start   │
+//!   └─────┬─────┘
+//!         │ warn_env_flags() / ensure_output()   [self-transitions]
+//!         │ select_palette()
+//!         v
+//!  ┌──────────────────┐
+//!  │ PaletteSelected  │
+//!  └────────┬─────────┘
+//!           │ load_template()
+//!           v
+//!  ┌──────────────────┐
+//!  │ TemplateLoaded   │
+//!  └────────┬─────────┘
+//!           │ apply_aliases()
+//!           v
+//!  ┌──────────────────┐
+//!  │ AliasesApplied   │
+//!  └────────┬─────────┘
+//!           │ build_mapping()
+//!           v
+//!  ┌──────────────────┐
+//!  │  MappingBuilt    │
+//!  └────────┬─────────┘
+//!           │ substitute_placeholders()
+//!           v
+//!  ┌──────────────────┐
+//!  │   FinalReady     │
+//!  └────────┬─────────┘
+//!           │ write_output()
+//!           v
+//!       Result<()>
+//! ```
+//!
+//! The convenience method [`CreateBuilder::run`] drives the entire chain
+//! from `Start` through `FinalReady`, returning once the output file is
+//! written.
+
 use std::collections::HashMap;
 
 use serde_json::Value;

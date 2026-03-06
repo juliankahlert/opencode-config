@@ -1,3 +1,41 @@
+//! Interactive wizard typestate builder.
+//!
+//! [`WizardBuilder`] guides the user through template selection,
+//! palette configuration, placeholder substitution, optional editor
+//! review, and final file write.  Each step is encoded as a distinct
+//! state type so the compiler enforces the correct ordering.
+//!
+//! ```text
+//!  Start
+//!    │  select_template()
+//!    ▼
+//!  TemplateSelected
+//!    │  select_palette()
+//!    ▼
+//!  PaletteSelected
+//!    │  load_template()
+//!    ▼
+//!  TemplateLoaded
+//!    │  apply_overrides()
+//!    ▼
+//!  OverridesApplied
+//!    │  build_mapping()
+//!    ▼
+//!  MappingBuilt
+//!    │  substitute_placeholders()
+//!    ▼
+//!  Substituted
+//!    │  write_draft()
+//!    ▼
+//!  DraftWritten
+//!    │  maybe_open_editor()
+//!    ▼
+//!  FinalReady
+//!    │  finalize_write()
+//!    ▼
+//!  (done)
+//! ```
+
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::path::{Path, PathBuf};

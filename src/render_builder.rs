@@ -1,3 +1,59 @@
+//! Typestate builder for the `render` command.
+//!
+//! [`RenderBuilder`] uses the typestate pattern to enforce a compile-time
+//! valid ordering of steps when rendering a template to stdout (as JSON or
+//! YAML) without writing a file to disk.
+//!
+//! # State-transition diagram
+//!
+//! ```text
+//!   ┌───────────┐
+//!   │   Start   │
+//!   └─────┬─────┘
+//!         │ load_configs()
+//!         v
+//!  ┌───────────────────────┐
+//!  │    ConfigsLoaded      │
+//!  └──────────┬────────────┘
+//!             │ resolve_palette()
+//!             v
+//!  ┌───────────────────────┐
+//!  │   PaletteResolved     │
+//!  └──────────┬────────────┘
+//!             │ resolve_template_path()
+//!             v
+//!  ┌───────────────────────┐
+//!  │ TemplatePathResolved  │
+//!  └──────────┬────────────┘
+//!             │ load_template()
+//!             v
+//!  ┌───────────────────────┐
+//!  │    TemplateLoaded     │
+//!  └──────────┬────────────┘
+//!             │ apply_alias_models()
+//!             v
+//!  ┌───────────────────────┐
+//!  │   AliasesApplied      │
+//!  └──────────┬────────────┘
+//!             │ build_mapping()
+//!             v
+//!  ┌───────────────────────┐
+//!  │    MappingBuilt       │
+//!  └──────────┬────────────┘
+//!             │ substitute()
+//!             v
+//!  ┌───────────────────────┐
+//!  │     Substituted       │
+//!  └──────────┬────────────┘
+//!             │ serialize()
+//!             v
+//!      RenderOutput
+//! ```
+//!
+//! Unlike [`super::create_builder::CreateBuilder`], the render builder does
+//! not write to disk. It returns a [`RenderOutput`](crate::render::RenderOutput)
+//! containing the serialized string and a line count.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
