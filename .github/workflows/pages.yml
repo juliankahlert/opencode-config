@@ -14,20 +14,36 @@ jobs:
     name: Build mdBook and publish to GitHub Pages
     runs-on: ubuntu-latest
 
+    env:
+      MDBOOK_VERSION: '0.5.12'
+      MDBOOK_MERMAID_VERSION: '0.12.0'
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-installed binaries
+        id: cargo-cache
+        uses: actions/cache@v5
         with:
-          toolchain: stable
-          override: true
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}-${{ env.MDBOOK_MERMAID_VERSION }}-cargo-cache
+          restore-keys: |
+            ${{ runner.os }}-mdbook-
 
       - name: Install mdbook and mdbook-mermaid
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
         run: |
-          cargo install mdbook --force
-          cargo install mdbook-mermaid --force
+          cargo install mdbook --version ${{ env.MDBOOK_VERSION }}
+          cargo install mdbook-mermaid --version ${{ env.MDBOOK_MERMAID_VERSION }}
 
       - name: Build mdBook
         working-directory: pages
@@ -43,4 +59,3 @@ jobs:
 
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
-
