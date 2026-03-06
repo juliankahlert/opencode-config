@@ -13,6 +13,17 @@ pub struct SchemaGenerateOptions {
     pub config_dir: PathBuf,
 }
 
+/// A single finding produced by JSON Schema validation.
+#[derive(Debug, Clone)]
+pub struct SchemaFinding {
+    /// JSON Pointer path to the invalid value (e.g. `"/agent/build/model"`).
+    pub instance_path: String,
+    /// JSON Pointer path into the schema that triggered the error.
+    pub schema_path: String,
+    /// Human-readable description of the violation.
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum SchemaError {
     #[error("palette name is required")]
@@ -32,6 +43,8 @@ pub enum SchemaError {
         #[source]
         source: serde_json::Error,
     },
+    #[error("invalid schema: {message}")]
+    InvalidSchema { message: String },
 }
 
 pub fn generate_schema_file(options: SchemaGenerateOptions) -> Result<PathBuf, SchemaError> {
@@ -95,13 +108,42 @@ fn build_schema(palette: &Palette) -> Value {
     })
 }
 
+/// Validate `instance` against `schema` using JSON Schema.
+///
+/// Compiles the schema once via the `jsonschema` crate and maps each
+/// validation error into a [`SchemaFinding`] with path and message fields.
+///
+/// Returns an empty `Vec` when the instance is valid.
+/// Returns one `SchemaFinding` per violation when invalid.
+/// Returns [`SchemaError::InvalidSchema`] if the schema itself cannot be compiled.
+pub fn validate_against_schema(
+    schema: &Value,
+    instance: &Value,
+) -> Result<Vec<SchemaFinding>, SchemaError> {
+    let validator = jsonschema::validator_for(schema).map_err(|e| SchemaError::InvalidSchema {
+        message: e.to_string(),
+    })?;
+
+    let findings = validator
+        .iter_errors(instance)
+        .map(|err| SchemaFinding {
+            instance_path: err.instance_path.to_string(),
+            schema_path: err.schema_path.to_string(),
+            message: err.to_string(),
+        })
+        .collect();
+
+    Ok(findings)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
+    use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{SchemaGenerateOptions, generate_schema_file};
+    use super::{SchemaGenerateOptions, generate_schema_file, validate_against_schema};
 
     #[test]
     fn generate_schema_writes_file() {
@@ -129,6 +171,93 @@ palettes:
         assert_eq!(
             value["properties"]["agent"]["properties"]["build"]["properties"]["model"]["type"],
             "string"
+        );
+    }
+
+    #[test]
+    fn valid_document_passes() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            }
+        });
+        let instance = json!({ "name": "ok" });
+
+        let findings = validate_against_schema(&schema, &instance).expect("schema should compile");
+        assert!(findings.is_empty(), "expected no findings for valid doc");
+    }
+
+    #[test]
+    fn invalid_type_produces_finding() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "model": { "type": "string" }
+            }
+        });
+        let instance = json!({ "model": 42 });
+
+        let findings = validate_against_schema(&schema, &instance).expect("schema should compile");
+        assert!(!findings.is_empty(), "expected at least one finding");
+        assert_eq!(findings[0].instance_path, "/model");
+        assert!(
+            findings[0].message.contains("string"),
+            "message should mention 'string', got: {}",
+            findings[0].message
+        );
+    }
+
+    #[test]
+    fn missing_required_field_produces_finding() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        let instance = json!({});
+
+        let findings = validate_against_schema(&schema, &instance).expect("schema should compile");
+        assert!(!findings.is_empty(), "expected at least one finding");
+        assert!(
+            findings.iter().any(|f| f.message.contains("required")),
+            "expected a finding mentioning 'required', got: {:?}",
+            findings
+        );
+    }
+
+    #[test]
+    fn malformed_schema_returns_error() {
+        let schema = json!({ "type": "not-a-real-type" });
+        let instance = json!({});
+
+        let result = validate_against_schema(&schema, &instance);
+        assert!(result.is_err(), "expected Err for malformed schema");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, super::SchemaError::InvalidSchema { .. }),
+            "expected InvalidSchema variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_violations_return_multiple_findings() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "first": { "type": "string" },
+                "second": { "type": "string" }
+            }
+        });
+        let instance = json!({ "first": 1, "second": 2 });
+
+        let findings = validate_against_schema(&schema, &instance).expect("schema should compile");
+        assert!(
+            findings.len() >= 2,
+            "expected at least 2 findings, got {}",
+            findings.len()
         );
     }
 }
