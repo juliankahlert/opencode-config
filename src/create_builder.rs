@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::marker::PhantomData;
 
 use serde_json::Value;
 
@@ -14,7 +13,6 @@ use crate::template::{
 pub struct CreateBuilder<State> {
     options: CreateOptions,
     state: State,
-    _state: PhantomData<State>,
 }
 
 pub struct Start;
@@ -42,7 +40,6 @@ impl<State> CreateBuilder<State> {
         CreateBuilder {
             options: self.options,
             state,
-            _state: PhantomData,
         }
     }
 }
@@ -52,7 +49,6 @@ impl CreateBuilder<Start> {
         Self {
             options,
             state: Start,
-            _state: PhantomData,
         }
     }
 
@@ -101,11 +97,7 @@ impl CreateBuilder<Start> {
 
 impl CreateBuilder<PaletteSelected> {
     pub fn load_template(self) -> Result<CreateBuilder<TemplateLoaded>, CreateError> {
-        let CreateBuilder {
-            options,
-            state,
-            _state: _,
-        } = self;
+        let CreateBuilder { options, state } = self;
 
         if !is_valid_template_name(&options.template) {
             return Err(CreateError::InvalidTemplateName {
@@ -120,18 +112,13 @@ impl CreateBuilder<PaletteSelected> {
                 palette: state.palette,
                 template_value,
             },
-            _state: PhantomData,
         })
     }
 }
 
 impl CreateBuilder<TemplateLoaded> {
     pub fn apply_aliases(self) -> Result<CreateBuilder<AliasesApplied>, CreateError> {
-        let CreateBuilder {
-            options,
-            state,
-            _state: _,
-        } = self;
+        let CreateBuilder { options, state } = self;
 
         let TemplateLoaded {
             palette,
@@ -144,18 +131,13 @@ impl CreateBuilder<TemplateLoaded> {
                 palette,
                 template_value,
             },
-            _state: PhantomData,
         })
     }
 }
 
 impl CreateBuilder<AliasesApplied> {
     pub fn build_mapping(self) -> Result<CreateBuilder<MappingBuilt>, CreateError> {
-        let CreateBuilder {
-            options,
-            state,
-            _state: _,
-        } = self;
+        let CreateBuilder { options, state } = self;
 
         let AliasesApplied {
             palette,
@@ -168,18 +150,13 @@ impl CreateBuilder<AliasesApplied> {
                 template_value,
                 mapping,
             },
-            _state: PhantomData,
         })
     }
 }
 
 impl CreateBuilder<MappingBuilt> {
     pub fn substitute_placeholders(self) -> Result<CreateBuilder<FinalReady>, CreateError> {
-        let CreateBuilder {
-            options,
-            state,
-            _state: _,
-        } = self;
+        let CreateBuilder { options, state } = self;
 
         let MappingBuilt {
             mut template_value,
@@ -189,18 +166,13 @@ impl CreateBuilder<MappingBuilt> {
         Ok(CreateBuilder {
             options,
             state: FinalReady { template_value },
-            _state: PhantomData,
         })
     }
 }
 
 impl CreateBuilder<FinalReady> {
     pub fn write_output(self) -> Result<(), CreateError> {
-        let CreateBuilder {
-            options,
-            state,
-            _state: _,
-        } = self;
+        let CreateBuilder { options, state } = self;
 
         write_json_pretty(
             &options.out,

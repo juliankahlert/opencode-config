@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -125,7 +124,6 @@ struct ImportPlanned {
 struct PaletteImportBuilder<State> {
     options: ImportOptions,
     state: State,
-    _state: PhantomData<State>,
 }
 
 impl PaletteImportBuilder<ImportStart> {
@@ -133,7 +131,6 @@ impl PaletteImportBuilder<ImportStart> {
         Self {
             options,
             state: ImportStart,
-            _state: PhantomData,
         }
     }
 
@@ -159,7 +156,6 @@ impl PaletteImportBuilder<ImportStart> {
                 created,
                 conflicts,
             },
-            _state: PhantomData,
         })
     }
 }
@@ -187,7 +183,6 @@ impl PaletteImportBuilder<ImportLoaded> {
                     changed: false,
                     status: ImportStatus::Aborted,
                 },
-                _state: PhantomData,
             });
         }
 
@@ -227,7 +222,6 @@ impl PaletteImportBuilder<ImportLoaded> {
                 changed,
                 status,
             },
-            _state: PhantomData,
         })
     }
 }
