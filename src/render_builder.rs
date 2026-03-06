@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -13,35 +12,34 @@ use crate::template::{
 
 pub(crate) struct RenderBuilder<State> {
     options: RenderOptions,
-    configs: Option<ModelConfigs>,
-    palette: Option<Palette>,
-    template_path: Option<PathBuf>,
-    template_value: Option<Value>,
-    mapping: Option<HashMap<String, Value>>,
-    _state: PhantomData<State>,
+    state: State,
 }
 
 pub(crate) struct Start;
-pub(crate) struct ConfigsLoaded;
-pub(crate) struct PaletteResolved;
-pub(crate) struct TemplatePathResolved;
-pub(crate) struct TemplateLoaded;
-pub(crate) struct AliasesApplied;
-pub(crate) struct MappingBuilt;
-pub(crate) struct Substituted;
-
-impl<State> RenderBuilder<State> {
-    fn transition<Next>(self) -> RenderBuilder<Next> {
-        RenderBuilder {
-            options: self.options,
-            configs: self.configs,
-            palette: self.palette,
-            template_path: self.template_path,
-            template_value: self.template_value,
-            mapping: self.mapping,
-            _state: PhantomData,
-        }
-    }
+pub(crate) struct ConfigsLoaded {
+    configs: ModelConfigs,
+}
+pub(crate) struct PaletteResolved {
+    palette: Palette,
+}
+pub(crate) struct TemplatePathResolved {
+    palette: Palette,
+    template_path: PathBuf,
+}
+pub(crate) struct TemplateLoaded {
+    palette: Palette,
+    template_value: Value,
+}
+pub(crate) struct AliasesApplied {
+    palette: Palette,
+    template_value: Value,
+}
+pub(crate) struct MappingBuilt {
+    template_value: Value,
+    mapping: HashMap<String, Value>,
+}
+pub(crate) struct Substituted {
+    template_value: Value,
 }
 
 impl RenderBuilder<Start> {
@@ -54,37 +52,34 @@ impl RenderBuilder<Start> {
         }
         Self {
             options,
-            configs: None,
-            palette: None,
-            template_path: None,
-            template_value: None,
-            mapping: None,
-            _state: PhantomData,
+            state: Start,
         }
     }
 
     pub(crate) fn load_configs(self) -> Result<RenderBuilder<ConfigsLoaded>, RenderError> {
         let configs = load_model_configs(&self.options.config_dir)?;
-        let mut builder = self.transition();
-        builder.configs = Some(configs);
-        Ok(builder)
+        Ok(RenderBuilder {
+            options: self.options,
+            state: ConfigsLoaded { configs },
+        })
     }
 }
 
 impl RenderBuilder<ConfigsLoaded> {
     pub(crate) fn resolve_palette(self) -> Result<RenderBuilder<PaletteResolved>, RenderError> {
-        let palette_name = self.options.palette.clone();
-        let configs = self.configs.as_ref().ok_or(RenderError::MissingPalette {
-            name: palette_name.clone(),
-        })?;
-        let palette = configs
+        let RenderBuilder { options, state } = self;
+        let palette = state
+            .configs
             .palettes
-            .get(&palette_name)
-            .ok_or(RenderError::MissingPalette { name: palette_name })?
+            .get(&options.palette)
+            .ok_or(RenderError::MissingPalette {
+                name: options.palette.clone(),
+            })?
             .clone();
-        let mut builder = self.transition();
-        builder.palette = Some(palette);
-        Ok(builder)
+        Ok(RenderBuilder {
+            options,
+            state: PaletteResolved { palette },
+        })
     }
 }
 
@@ -92,101 +87,93 @@ impl RenderBuilder<PaletteResolved> {
     pub(crate) fn resolve_template_path(
         self,
     ) -> Result<RenderBuilder<TemplatePathResolved>, RenderError> {
-        if self.options.template.is_empty() {
+        let RenderBuilder { options, state } = self;
+        if options.template.is_empty() {
             return Err(RenderError::InvalidTemplateName {
-                name: self.options.template.clone(),
+                name: options.template.clone(),
             });
         }
         let template_path =
-            resolve_template_path_allowing_path(&self.options.config_dir, &self.options.template);
-        let mut builder = self.transition();
-        builder.template_path = Some(template_path);
-        Ok(builder)
+            resolve_template_path_allowing_path(&options.config_dir, &options.template);
+        Ok(RenderBuilder {
+            options,
+            state: TemplatePathResolved {
+                palette: state.palette,
+                template_path,
+            },
+        })
     }
 }
 
 impl RenderBuilder<TemplatePathResolved> {
     pub(crate) fn load_template(self) -> Result<RenderBuilder<TemplateLoaded>, RenderError> {
-        let template_path =
-            self.template_path
-                .as_ref()
-                .ok_or(RenderError::InvalidTemplateName {
-                    name: self.options.template.clone(),
-                })?;
-        let template_value = load_template(template_path)?;
-        let mut builder = self.transition();
-        builder.template_value = Some(template_value);
-        Ok(builder)
+        let RenderBuilder { options, state } = self;
+        let template_value = load_template(&state.template_path)?;
+        Ok(RenderBuilder {
+            options,
+            state: TemplateLoaded {
+                palette: state.palette,
+                template_value,
+            },
+        })
     }
 }
 
 impl RenderBuilder<TemplateLoaded> {
     pub(crate) fn apply_alias_models(self) -> Result<RenderBuilder<AliasesApplied>, RenderError> {
-        let mut builder = self;
-        let palette = builder
-            .palette
-            .as_ref()
-            .ok_or(RenderError::MissingPalette {
-                name: builder.options.palette.clone(),
-            })?;
-        let mut template_value =
-            builder
-                .template_value
-                .take()
-                .ok_or(RenderError::InvalidTemplateName {
-                    name: builder.options.template.clone(),
-                })?;
-        apply_alias_models(&mut template_value, palette);
-        builder.template_value = Some(template_value);
-        Ok(builder.transition())
+        let RenderBuilder { options, state } = self;
+        let TemplateLoaded {
+            palette,
+            mut template_value,
+        } = state;
+        apply_alias_models(&mut template_value, &palette);
+        Ok(RenderBuilder {
+            options,
+            state: AliasesApplied {
+                palette,
+                template_value,
+            },
+        })
     }
 }
 
 impl RenderBuilder<AliasesApplied> {
     pub(crate) fn build_mapping(self) -> Result<RenderBuilder<MappingBuilt>, RenderError> {
-        let mut builder = self;
-        let palette = builder
-            .palette
-            .as_ref()
-            .ok_or(RenderError::MissingPalette {
-                name: builder.options.palette.clone(),
-            })?;
-        let mapping = build_mapping(palette);
-        builder.mapping = Some(mapping);
-        Ok(builder.transition())
+        let RenderBuilder { options, state } = self;
+        let AliasesApplied {
+            palette,
+            template_value,
+        } = state;
+        let mapping = build_mapping(&palette);
+        Ok(RenderBuilder {
+            options,
+            state: MappingBuilt {
+                template_value,
+                mapping,
+            },
+        })
     }
 }
 
 impl RenderBuilder<MappingBuilt> {
     pub(crate) fn substitute(self) -> Result<RenderBuilder<Substituted>, RenderError> {
-        let mut builder = self;
-        let mapping = builder
-            .mapping
-            .as_ref()
-            .ok_or(RenderError::MissingPalette {
-                name: builder.options.palette.clone(),
-            })?;
-        let mut template_value =
-            builder
-                .template_value
-                .take()
-                .ok_or(RenderError::InvalidTemplateName {
-                    name: builder.options.template.clone(),
-                })?;
-        substitute(&mut template_value, mapping, builder.options.strict)?;
-        builder.template_value = Some(template_value);
-        Ok(builder.transition())
+        let RenderBuilder { options, state } = self;
+        let MappingBuilt {
+            mut template_value,
+            mapping,
+        } = state;
+        substitute(&mut template_value, &mapping, options.strict)?;
+        Ok(RenderBuilder {
+            options,
+            state: Substituted { template_value },
+        })
     }
 }
 
 impl RenderBuilder<Substituted> {
     pub(crate) fn serialize(self) -> Result<RenderOutput, RenderError> {
-        let template_value = self
-            .template_value
-            .ok_or(RenderError::InvalidTemplateName {
-                name: self.options.template.clone(),
-            })?;
-        let data = serialize_output(&template_value, self.options.format)?;
+        let RenderBuilder { options, state } = self;
+        let data = serialize_output(&state.template_value, options.format)?;
         let lines = data.lines().count();
         Ok(RenderOutput { data, lines })
     }

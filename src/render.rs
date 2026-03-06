@@ -71,7 +71,7 @@ mod tests {
     use serde_json::Value;
     use tempfile::TempDir;
 
-    use super::{OutputFormat, RenderOptions, render};
+    use super::{OutputFormat, RenderError, RenderOptions, render};
 
     const SAMPLE_YAML: &str = r#"
 palettes:
@@ -157,6 +157,30 @@ description: "Build uses {{build}}"
         let value: Value = serde_json::from_str(&output.data).expect("parse json");
         assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
         assert_eq!(value["description"], "Build uses openrouter/openai/gpt-4o");
+    }
+
+    #[test]
+    fn missing_palette_error() {
+        let config_dir = TempDir::new().expect("config dir");
+        write_config(config_dir.path());
+
+        let result = render(RenderOptions {
+            template: "default".to_string(),
+            palette: "nonexistent".to_string(),
+            format: OutputFormat::Json,
+            strict: false,
+            env_allow: false,
+            env_mask_logs: false,
+            config_dir: config_dir.path().to_path_buf(),
+        });
+
+        match result {
+            Err(RenderError::MissingPalette { name }) => {
+                assert_eq!(name, "nonexistent");
+            }
+            Err(other) => panic!("expected MissingPalette error, got: {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
     }
 
     #[test]
