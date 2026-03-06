@@ -3,6 +3,7 @@ pub mod completions;
 pub mod config;
 pub mod create;
 pub(crate) mod create_builder;
+pub(crate) mod env_resolve;
 pub mod options;
 pub mod palette_io;
 pub mod render;
