@@ -38,7 +38,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::config::{AgentConfig, ModelConfigs, Palette, Reasoning};
-use crate::template::{load_template, TemplateError};
+use crate::template::{TemplateError, load_template};
 
 #[derive(Debug, Clone)]
 pub struct ValidateOpts {
@@ -1144,10 +1144,12 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert!(report.counts.errors > 0);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.kind == "unknown-placeholder"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == "unknown-placeholder")
+        );
     }
 
     #[test]
@@ -1211,10 +1213,12 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert_eq!(report.counts.errors, 0);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.kind == "schema-not-implemented"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == "schema-not-implemented")
+        );
     }
 
     #[test]
@@ -1239,10 +1243,12 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert_eq!(report.counts.errors, 0);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.kind == "env-flags-not-implemented"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == "env-flags-not-implemented")
+        );
     }
 
     #[test]
@@ -1266,10 +1272,12 @@ palettes:
         };
 
         let report = validate_dir(config_dir, opts).expect("validate");
-        assert!(report
-            .findings
-            .iter()
-            .all(|f| f.kind != "env-flags-not-implemented"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "env-flags-not-implemented")
+        );
     }
 
     #[test]
