@@ -519,4 +519,147 @@ mapping:
         assert!(palette.agents.contains_key("review"));
         assert_eq!(palette.mapping["review-count"], json!(2));
     }
+
+    #[test]
+    fn export_palette_serializes_yaml() {
+        let config_dir = TempDir::new().expect("config dir");
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "beta".to_string(),
+            Palette {
+                agents: std::collections::BTreeMap::from([(
+                    "review".to_string(),
+                    AgentConfig {
+                        model: "openrouter/review-v2".to_string(),
+                        variant: Some("large".to_string()),
+                        reasoning: Some(Reasoning::Bool(false)),
+                    },
+                )]),
+                mapping: std::collections::BTreeMap::from([("timeout".to_string(), json!(30))]),
+            },
+        );
+        write_configs(&config_dir, &ModelConfigs { palettes });
+
+        let output = export_palette(ExportOptions {
+            name: "beta".to_string(),
+            format: PaletteFormat::Yaml,
+            config_dir: config_dir.path().to_path_buf(),
+        })
+        .expect("export palette as yaml");
+
+        let parsed: Palette = serde_yaml::from_str(&output.data).expect("parse yaml output");
+        assert_eq!(parsed.agents.len(), 1);
+        assert_eq!(parsed.agents["review"].model, "openrouter/review-v2");
+        assert_eq!(parsed.agents["review"].variant.as_deref(), Some("large"));
+        assert_eq!(parsed.mapping["timeout"], json!(30));
+        assert!(output.lines > 0);
+    }
+
+    #[test]
+    fn import_palette_overwrite_replaces_existing_agents() {
+        let config_dir = TempDir::new().expect("config dir");
+        let mut palettes = std::collections::BTreeMap::new();
+        palettes.insert(
+            "gamma".to_string(),
+            Palette {
+                agents: std::collections::BTreeMap::from([
+                    (
+                        "build".to_string(),
+                        AgentConfig {
+                            model: "openrouter/old-build".to_string(),
+                            variant: None,
+                            reasoning: None,
+                        },
+                    ),
+                    (
+                        "lint".to_string(),
+                        AgentConfig {
+                            model: "openrouter/old-lint".to_string(),
+                            variant: None,
+                            reasoning: None,
+                        },
+                    ),
+                ]),
+                mapping: std::collections::BTreeMap::from([("retries".to_string(), json!(1))]),
+            },
+        );
+        write_configs(&config_dir, &ModelConfigs { palettes });
+
+        let import_path = config_dir.path().join("overwrite.yaml");
+        fs::write(
+            &import_path,
+            r#"agents:
+  build:
+    model: openrouter/new-build
+    variant: turbo
+mapping:
+  retries: 5
+  extra-flag: true
+"#,
+        )
+        .expect("write import file");
+
+        let report = import_palette(ImportOptions {
+            from: import_path,
+            name: Some("gamma".to_string()),
+            merge: MergeStrategy::Overwrite,
+            dry_run: false,
+            force: true,
+            config_dir: config_dir.path().to_path_buf(),
+        })
+        .expect("import palette with overwrite");
+
+        assert_eq!(report.status, ImportStatus::Applied);
+        assert!(!report.created);
+
+        let configs = crate::config::load_model_configs(config_dir.path()).expect("load configs");
+        let palette = configs.palettes.get("gamma").expect("gamma palette");
+
+        // Overwrite replaces entirely: only incoming agents/mapping survive
+        assert_eq!(palette.agents.len(), 1);
+        assert_eq!(palette.agents["build"].model, "openrouter/new-build");
+        assert_eq!(palette.agents["build"].variant.as_deref(), Some("turbo"));
+        assert!(!palette.agents.contains_key("lint"));
+        assert_eq!(palette.mapping["retries"], json!(5));
+        assert_eq!(palette.mapping["extra-flag"], json!(true));
+        assert_eq!(palette.mapping.len(), 2);
+    }
+
+    #[test]
+    fn import_malformed_yaml_returns_parse_error() {
+        let config_dir = TempDir::new().expect("config dir");
+        write_configs(
+            &config_dir,
+            &ModelConfigs {
+                palettes: std::collections::BTreeMap::new(),
+            },
+        );
+
+        let import_path = config_dir.path().join("broken.yaml");
+        fs::write(
+            &import_path,
+            // Structurally invalid YAML: tab indentation mixed with invalid mapping
+            "agents:\n  build:\n    model: [unterminated\n    :\n",
+        )
+        .expect("write malformed import file");
+
+        let result = import_palette(ImportOptions {
+            from: import_path,
+            name: Some("bad".to_string()),
+            merge: MergeStrategy::Merge,
+            dry_run: false,
+            force: true,
+            config_dir: config_dir.path().to_path_buf(),
+        });
+
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected parse error for malformed YAML"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parse yaml palette") || msg.contains("parse palette"),
+            "expected parse error, got: {msg}"
+        );
+    }
 }

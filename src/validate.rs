@@ -1250,4 +1250,156 @@ palettes:
                 .all(|f| f.kind != "env-flags-not-implemented")
         );
     }
+
+    #[test]
+    fn validate_clean_config_produces_no_errors() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_template(
+            config_dir,
+            "clean.json",
+            r#"{ "agent": { "build": { "model": "{{agent-build-model}}" } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        assert_eq!(
+            report.counts.errors,
+            0,
+            "expected zero errors but got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.severity == Severity::Error)
+                .map(|f| format!("{}: {}", f.kind, f.message))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            report.counts.warnings,
+            0,
+            "expected zero warnings but got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.severity == Severity::Warning)
+                .map(|f| format!("{}: {}", f.kind, f.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_json_report_structure() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_template(
+            config_dir,
+            "default.json",
+            r#"{ "agent": { "build": { "model": "{{unknown-agent}}" } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let json_report = format_report_json(&report);
+        let serialized = serde_json::to_value(&json_report).expect("serialize json report");
+
+        // Top-level must have "errors" and "warnings" arrays
+        assert!(serialized.get("errors").is_some(), "missing 'errors' key");
+        assert!(
+            serialized.get("warnings").is_some(),
+            "missing 'warnings' key"
+        );
+        assert!(serialized["errors"].is_array(), "'errors' is not an array");
+        assert!(
+            serialized["warnings"].is_array(),
+            "'warnings' is not an array"
+        );
+
+        // The unknown placeholder should appear in errors
+        let errors = serialized["errors"].as_array().unwrap();
+        assert!(!errors.is_empty(), "expected at least one error finding");
+
+        let first = &errors[0];
+        assert!(first.get("file").is_some(), "finding missing 'file'");
+        assert!(first.get("path").is_some(), "finding missing 'path'");
+        assert!(first.get("kind").is_some(), "finding missing 'kind'");
+        assert!(first.get("message").is_some(), "finding missing 'message'");
+        assert_eq!(first["kind"].as_str().unwrap(), "unknown-placeholder");
+    }
+
+    #[test]
+    fn validate_missing_model_in_palette_produces_finding() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+
+        // Two palettes: "default" has agent "build", "alt" does not.
+        let yaml = r#"
+palettes:
+  default:
+    agents:
+      build:
+        model: openrouter/openai/gpt-4o
+  alt:
+    agents:
+      deploy:
+        model: openrouter/anthropic/claude-3.5-sonnet
+"#;
+        fs::write(config_dir.join("model-configs.yaml"), yaml).expect("write palettes");
+        write_template(
+            config_dir,
+            "default.json",
+            r#"{ "agent": { "build": { "model": "{{agent-build-model}}" } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+
+        // The "alt" palette is missing agent "build", so we expect a
+        // "palette-mismatch" warning for the {{agent-build-model}} placeholder.
+        let mismatch = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "palette-mismatch");
+        assert!(
+            mismatch.is_some(),
+            "expected palette-mismatch finding but got: {:?}",
+            report
+                .findings
+                .iter()
+                .map(|f| format!("[{}] {}: {}", f.severity.as_label(), f.kind, f.message))
+                .collect::<Vec<_>>()
+        );
+
+        let finding = mismatch.unwrap();
+        assert_eq!(finding.severity, Severity::Warning);
+        assert!(
+            finding.message.contains("alt"),
+            "finding should mention the palette missing the agent"
+        );
+    }
 }

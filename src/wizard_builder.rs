@@ -527,3 +527,317 @@ fn split_command(command: &str) -> Vec<String> {
     }
     parts
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, VecDeque};
+    use std::fs;
+
+    use serde_json::Value as JsonValue;
+    use tempfile::TempDir;
+
+    use super::WizardBuilder;
+    use crate::config::{AgentConfig, ModelConfigs, Palette};
+    use crate::options::RunOptions;
+    use crate::wizard::{WizardError, WizardOptions, WizardPrompter};
+
+    struct StubPrompter {
+        inputs: VecDeque<String>,
+        confirms: VecDeque<bool>,
+        selections: VecDeque<Vec<usize>>,
+    }
+
+    impl StubPrompter {
+        fn new() -> Self {
+            Self {
+                inputs: VecDeque::new(),
+                confirms: VecDeque::new(),
+                selections: VecDeque::new(),
+            }
+        }
+
+        fn push_input(mut self, value: &str) -> Self {
+            self.inputs.push_back(value.to_string());
+            self
+        }
+
+        fn push_confirm(mut self, value: bool) -> Self {
+            self.confirms.push_back(value);
+            self
+        }
+
+        fn push_selection(mut self, value: Vec<usize>) -> Self {
+            self.selections.push_back(value);
+            self
+        }
+    }
+
+    impl WizardPrompter for StubPrompter {
+        fn input(&mut self, _prompt: &str, default: Option<&str>) -> Result<String, WizardError> {
+            match self.inputs.pop_front() {
+                Some(value) => Ok(value),
+                None => Ok(default.unwrap_or("").to_string()),
+            }
+        }
+
+        fn confirm(&mut self, _prompt: &str, default: bool) -> Result<bool, WizardError> {
+            Ok(self.confirms.pop_front().unwrap_or(default))
+        }
+
+        fn multi_select(
+            &mut self,
+            _prompt: &str,
+            _options: &[String],
+        ) -> Result<Vec<usize>, WizardError> {
+            Ok(self.selections.pop_front().unwrap_or_default())
+        }
+
+        fn allow_editor_prompt(&self) -> bool {
+            false
+        }
+    }
+
+    fn write_template(dir: &TempDir, name: &str, contents: &str) {
+        let template_dir = dir.path().join("template.d");
+        fs::create_dir_all(&template_dir).expect("create template dir");
+        fs::write(template_dir.join(name), contents).expect("write template");
+    }
+
+    fn write_model_configs(dir: &TempDir, configs: &ModelConfigs) {
+        let data = serde_yaml::to_string(configs).expect("serialize configs");
+        fs::write(dir.path().join("model-configs.yaml"), data).expect("write model configs");
+    }
+
+    #[test]
+    fn end_to_end_run_writes_output() {
+        let config_dir = TempDir::new().expect("config dir");
+        let out_dir = TempDir::new().expect("out dir");
+        let out_path = out_dir.path().join("opencode.json");
+
+        write_template(
+            &config_dir,
+            "default.json",
+            r#"{"agent": {"build": {"model": "{{build}}"}}, "name": "{{project-name}}"}"#,
+        );
+        write_model_configs(
+            &config_dir,
+            &ModelConfigs {
+                palettes: BTreeMap::from([(
+                    "default".to_string(),
+                    Palette {
+                        agents: BTreeMap::from([(
+                            "build".to_string(),
+                            AgentConfig {
+                                model: "openrouter/gpt-4o".to_string(),
+                                variant: None,
+                                reasoning: None,
+                            },
+                        )]),
+                        mapping: BTreeMap::new(),
+                    },
+                )]),
+            },
+        );
+
+        let mut prompter = StubPrompter::new()
+            .push_input("default")
+            .push_input("default")
+            .push_selection(vec![])
+            .push_input("my-project")
+            .push_confirm(true);
+
+        let options = WizardOptions {
+            template: Some("default".to_string()),
+            palette: Some("default".to_string()),
+            out: out_path.clone(),
+            force: false,
+            run_options: RunOptions::default(),
+            config_dir: config_dir.path().to_path_buf(),
+        };
+
+        WizardBuilder::new(options, &mut prompter)
+            .run()
+            .expect("wizard run");
+
+        assert!(out_path.exists());
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: JsonValue = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["agent"]["build"]["model"], "openrouter/gpt-4o");
+        assert_eq!(value["name"], "my-project");
+    }
+
+    #[test]
+    fn select_template_uses_prompter() {
+        let config_dir = TempDir::new().expect("config dir");
+        let out_dir = TempDir::new().expect("out dir");
+        let out_path = out_dir.path().join("opencode.json");
+
+        write_template(
+            &config_dir,
+            "alpha.json",
+            r#"{"flavor": "alpha", "agent": {"build": {"model": "{{build}}"}}}"#,
+        );
+        write_template(
+            &config_dir,
+            "beta.json",
+            r#"{"flavor": "beta", "agent": {"build": {"model": "{{build}}"}}}"#,
+        );
+        write_model_configs(
+            &config_dir,
+            &ModelConfigs {
+                palettes: BTreeMap::from([(
+                    "default".to_string(),
+                    Palette {
+                        agents: BTreeMap::from([(
+                            "build".to_string(),
+                            AgentConfig {
+                                model: "openrouter/build".to_string(),
+                                variant: None,
+                                reasoning: None,
+                            },
+                        )]),
+                        mapping: BTreeMap::new(),
+                    },
+                )]),
+            },
+        );
+
+        let mut prompter = StubPrompter::new()
+            .push_input("beta")
+            .push_input("default")
+            .push_selection(vec![])
+            .push_confirm(true);
+
+        let options = WizardOptions {
+            template: None,
+            palette: None,
+            out: out_path.clone(),
+            force: false,
+            run_options: RunOptions::default(),
+            config_dir: config_dir.path().to_path_buf(),
+        };
+
+        WizardBuilder::new(options, &mut prompter)
+            .run()
+            .expect("wizard run");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: JsonValue = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["flavor"], "beta");
+    }
+
+    #[test]
+    fn apply_overrides_modifies_output() {
+        let config_dir = TempDir::new().expect("config dir");
+        let out_dir = TempDir::new().expect("out dir");
+        let out_path = out_dir.path().join("opencode.json");
+
+        write_template(
+            &config_dir,
+            "default.json",
+            r#"{"agent": {"build": {"model": "{{build}}", "variant": "{{build-variant}}"}}}"#,
+        );
+        write_model_configs(
+            &config_dir,
+            &ModelConfigs {
+                palettes: BTreeMap::from([(
+                    "default".to_string(),
+                    Palette {
+                        agents: BTreeMap::from([(
+                            "build".to_string(),
+                            AgentConfig {
+                                model: "openrouter/original".to_string(),
+                                variant: Some("mini".to_string()),
+                                reasoning: None,
+                            },
+                        )]),
+                        mapping: BTreeMap::new(),
+                    },
+                )]),
+            },
+        );
+
+        let mut prompter = StubPrompter::new()
+            .push_input("default")
+            .push_input("default")
+            .push_selection(vec![0])
+            .push_input("openrouter/custom")
+            .push_input("large")
+            .push_confirm(true);
+
+        let options = WizardOptions {
+            template: Some("default".to_string()),
+            palette: Some("default".to_string()),
+            out: out_path.clone(),
+            force: false,
+            run_options: RunOptions::default(),
+            config_dir: config_dir.path().to_path_buf(),
+        };
+
+        WizardBuilder::new(options, &mut prompter)
+            .run()
+            .expect("wizard run");
+
+        let data = fs::read_to_string(&out_path).expect("read output");
+        let value: JsonValue = serde_json::from_str(&data).expect("parse json");
+        assert_eq!(value["agent"]["build"]["model"], "openrouter/custom");
+        assert_eq!(value["agent"]["build"]["variant"], "large");
+    }
+
+    #[test]
+    fn confirm_rejection_aborts() {
+        let config_dir = TempDir::new().expect("config dir");
+        let out_dir = TempDir::new().expect("out dir");
+        let out_path = out_dir.path().join("opencode.json");
+
+        write_template(
+            &config_dir,
+            "default.json",
+            r#"{"agent": {"build": {"model": "{{build}}"}}}"#,
+        );
+        write_model_configs(
+            &config_dir,
+            &ModelConfigs {
+                palettes: BTreeMap::from([(
+                    "default".to_string(),
+                    Palette {
+                        agents: BTreeMap::from([(
+                            "build".to_string(),
+                            AgentConfig {
+                                model: "openrouter/build".to_string(),
+                                variant: None,
+                                reasoning: None,
+                            },
+                        )]),
+                        mapping: BTreeMap::new(),
+                    },
+                )]),
+            },
+        );
+
+        let mut prompter = StubPrompter::new()
+            .push_input("default")
+            .push_input("default")
+            .push_selection(vec![])
+            .push_confirm(false);
+
+        let options = WizardOptions {
+            template: Some("default".to_string()),
+            palette: Some("default".to_string()),
+            out: out_path.clone(),
+            force: false,
+            run_options: RunOptions::default(),
+            config_dir: config_dir.path().to_path_buf(),
+        };
+
+        let err = WizardBuilder::new(options, &mut prompter)
+            .run()
+            .expect_err("wizard should abort");
+
+        match err {
+            WizardError::Aborted => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert!(!out_path.exists());
+    }
+}
