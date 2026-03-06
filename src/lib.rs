@@ -12,4 +12,5 @@ pub mod substitute;
 pub mod template;
 pub mod validate;
 pub mod wizard;
-pub(crate) mod wizard_builder;
+#[doc(hidden)]
+pub mod wizard_builder;

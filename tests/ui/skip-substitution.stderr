@@ -1,0 +1,8 @@
+error[E0599]: no method named `write_draft` found for struct `WizardBuilder<'_, MappingBuilt>` in the current scope
+ --> tests/ui/skip-substitution.rs:6:21
+  |
+6 |     let _ = builder.write_draft();
+  |                     ^^^^^^^^^^^ method not found in `WizardBuilder<'_, MappingBuilt>`
+  |
+  = note: the method was found for
+          - `WizardBuilder<'a, wizard_builder::Substituted>`

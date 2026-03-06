@@ -1,6 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
 use std::env;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,43 +15,44 @@ use crate::template::{
 };
 use crate::wizard::{WizardError, WizardOptions, WizardPrompter};
 
-pub(crate) struct WizardBuilder<'a, State> {
+#[doc(hidden)]
+pub struct WizardBuilder<'a, S> {
     options: WizardOptions,
     prompter: &'a mut dyn WizardPrompter,
-    template_name: Option<String>,
-    palette: Option<Palette>,
-    template_value: Option<Value>,
-    mapping: Option<HashMap<String, Value>>,
-    temp_dir: Option<TempDir>,
-    draft_path: Option<PathBuf>,
-    final_value: Option<Value>,
-    _state: PhantomData<State>,
+    state: S,
 }
 
 pub(crate) struct Start;
-pub(crate) struct TemplateSelected;
-pub(crate) struct PaletteSelected;
-pub(crate) struct TemplateLoaded;
-pub(crate) struct OverridesApplied;
-pub(crate) struct MappingBuilt;
-pub(crate) struct DraftWritten;
-pub(crate) struct FinalReady;
-
-impl<'a, State> WizardBuilder<'a, State> {
-    fn transition<Next>(self) -> WizardBuilder<'a, Next> {
-        WizardBuilder {
-            options: self.options,
-            prompter: self.prompter,
-            template_name: self.template_name,
-            palette: self.palette,
-            template_value: self.template_value,
-            mapping: self.mapping,
-            temp_dir: self.temp_dir,
-            draft_path: self.draft_path,
-            final_value: self.final_value,
-            _state: PhantomData,
-        }
-    }
+pub(crate) struct TemplateSelected {
+    template_name: String,
+}
+pub(crate) struct PaletteSelected {
+    template_name: String,
+    palette: Palette,
+}
+pub(crate) struct TemplateLoaded {
+    palette: Palette,
+    template_value: Value,
+}
+pub(crate) struct OverridesApplied {
+    palette: Palette,
+    template_value: Value,
+}
+#[doc(hidden)]
+pub struct MappingBuilt {
+    template_value: Value,
+    mapping: HashMap<String, Value>,
+}
+pub(crate) struct Substituted {
+    template_value: Value,
+}
+pub(crate) struct DraftWritten {
+    template_value: Value,
+    temp_dir: TempDir,
+    draft_path: PathBuf,
+}
+pub(crate) struct FinalReady {
+    final_value: Value,
 }
 
 impl<'a> WizardBuilder<'a, Start> {
@@ -60,14 +60,7 @@ impl<'a> WizardBuilder<'a, Start> {
         Self {
             options,
             prompter,
-            template_name: None,
-            palette: None,
-            template_value: None,
-            mapping: None,
-            temp_dir: None,
-            draft_path: None,
-            final_value: None,
-            _state: PhantomData,
+            state: Start,
         }
     }
 
@@ -94,15 +87,16 @@ impl<'a> WizardBuilder<'a, Start> {
     }
 
     pub(crate) fn select_template(
-        mut self,
+        self,
     ) -> Result<WizardBuilder<'a, TemplateSelected>, WizardError> {
-        let templates = list_templates(&self.options.config_dir).unwrap_or_default();
+        let WizardBuilder {
+            options,
+            prompter,
+            state: _,
+        } = self;
+        let templates = list_templates(&options.config_dir).unwrap_or_default();
         let template_set: BTreeSet<String> = templates.into_iter().collect();
-        let template = prompt_with_default(
-            self.prompter,
-            "Template name",
-            self.options.template.as_deref(),
-        )?;
+        let template = prompt_with_default(prompter, "Template name", options.template.as_deref())?;
         if template.trim().is_empty() {
             return Err(WizardError::InvalidTemplateName { name: template });
         }
@@ -113,25 +107,32 @@ impl<'a> WizardBuilder<'a, Start> {
         if !template_set.is_empty() && !template_set.contains(&template) {
             return Err(WizardError::InvalidTemplateName { name: template });
         }
-        self.template_name = Some(template);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: TemplateSelected {
+                template_name: template,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, TemplateSelected> {
-    pub(crate) fn select_palette(
-        mut self,
-    ) -> Result<WizardBuilder<'a, PaletteSelected>, WizardError> {
-        let configs = load_model_configs(&self.options.config_dir)?;
-        let palette = prompt_with_default(
-            self.prompter,
-            "Palette name",
-            self.options.palette.as_deref(),
-        )?;
-        if palette.trim().is_empty() {
-            return Err(WizardError::MissingPalette { name: palette });
+    pub(crate) fn select_palette(self) -> Result<WizardBuilder<'a, PaletteSelected>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let configs = load_model_configs(&options.config_dir)?;
+        let palette_input =
+            prompt_with_default(prompter, "Palette name", options.palette.as_deref())?;
+        if palette_input.trim().is_empty() {
+            return Err(WizardError::MissingPalette {
+                name: palette_input,
+            });
         }
-        let palette_name = palette.trim().to_string();
+        let palette_name = palette_input.trim().to_string();
         let palette = configs
             .palettes
             .get(&palette_name)
@@ -139,61 +140,81 @@ impl<'a> WizardBuilder<'a, TemplateSelected> {
                 name: palette_name.clone(),
             })?
             .clone();
-        self.palette = Some(palette);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: PaletteSelected {
+                template_name: state.template_name,
+                palette,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, PaletteSelected> {
-    pub(crate) fn load_template(
-        mut self,
-    ) -> Result<WizardBuilder<'a, TemplateLoaded>, WizardError> {
-        let template = self
-            .template_name
-            .as_deref()
-            .ok_or_else(|| WizardError::Prompt("missing template name".to_string()))?;
-        if !is_valid_template_name(template) {
+    pub(crate) fn load_template(self) -> Result<WizardBuilder<'a, TemplateLoaded>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        if !is_valid_template_name(&state.template_name) {
             return Err(WizardError::InvalidTemplateName {
-                name: template.to_string(),
+                name: state.template_name,
             });
         }
-        let template_path = resolve_template_name_path(&self.options.config_dir, template);
+        let template_path = resolve_template_name_path(&options.config_dir, &state.template_name);
         let template_value = load_template(&template_path)?;
-        self.template_value = Some(template_value);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: TemplateLoaded {
+                palette: state.palette,
+                template_value,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, TemplateLoaded> {
     pub(crate) fn apply_overrides(
-        mut self,
+        self,
     ) -> Result<WizardBuilder<'a, OverridesApplied>, WizardError> {
-        let palette = self
-            .palette
-            .as_mut()
-            .ok_or_else(|| WizardError::Prompt("missing palette".to_string()))?;
-        apply_agent_overrides(self.prompter, palette)?;
-        let template_value = self
-            .template_value
-            .as_mut()
-            .ok_or_else(|| WizardError::Prompt("missing template".to_string()))?;
-        apply_alias_models(template_value, palette);
-        Ok(self.transition())
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let TemplateLoaded {
+            mut palette,
+            mut template_value,
+        } = state;
+        apply_agent_overrides(prompter, &mut palette)?;
+        apply_alias_models(&mut template_value, &palette);
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: OverridesApplied {
+                palette,
+                template_value,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, OverridesApplied> {
-    pub(crate) fn build_mapping(mut self) -> Result<WizardBuilder<'a, MappingBuilt>, WizardError> {
-        let palette = self
-            .palette
-            .as_ref()
-            .ok_or_else(|| WizardError::Prompt("missing palette".to_string()))?;
-        let template_value = self
-            .template_value
-            .as_ref()
-            .ok_or_else(|| WizardError::Prompt("missing template".to_string()))?;
-        let mut mapping = build_mapping(palette);
-        let placeholders = collect_placeholders(template_value)?;
+    pub(crate) fn build_mapping(self) -> Result<WizardBuilder<'a, MappingBuilt>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let OverridesApplied {
+            palette,
+            template_value,
+        } = state;
+        let mut mapping = build_mapping(&palette);
+        let placeholders = collect_placeholders(&template_value)?;
         for key in placeholders {
             if mapping.contains_key(&key) {
                 continue;
@@ -201,38 +222,51 @@ impl<'a> WizardBuilder<'a, OverridesApplied> {
             if key.trim().starts_with("env:") {
                 continue;
             }
-            let value =
-                prompt_placeholder_value(self.prompter, &key, self.options.run_options.strict)?;
+            let value = prompt_placeholder_value(prompter, &key, options.run_options.strict)?;
             if let Some(value) = value {
                 mapping.insert(key, value);
             }
         }
-        self.mapping = Some(mapping);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: MappingBuilt {
+                template_value,
+                mapping,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, MappingBuilt> {
     pub(crate) fn substitute_placeholders(
-        mut self,
-    ) -> Result<WizardBuilder<'a, MappingBuilt>, WizardError> {
-        let mapping = self
-            .mapping
-            .as_ref()
-            .ok_or_else(|| WizardError::Prompt("missing mapping".to_string()))?;
-        let template_value = self
-            .template_value
-            .as_mut()
-            .ok_or_else(|| WizardError::Prompt("missing template".to_string()))?;
-        substitute(template_value, mapping, self.options.run_options.strict)?;
-        Ok(self)
+        self,
+    ) -> Result<WizardBuilder<'a, Substituted>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let MappingBuilt {
+            mut template_value,
+            mapping,
+        } = state;
+        substitute(&mut template_value, &mapping, options.run_options.strict)?;
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: Substituted { template_value },
+        })
     }
+}
 
-    pub(crate) fn write_draft(mut self) -> Result<WizardBuilder<'a, DraftWritten>, WizardError> {
-        let template_value = self
-            .template_value
-            .as_ref()
-            .ok_or_else(|| WizardError::Prompt("missing template".to_string()))?;
+impl<'a> WizardBuilder<'a, Substituted> {
+    pub(crate) fn write_draft(self) -> Result<WizardBuilder<'a, DraftWritten>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
         let temp_dir = TempDir::new().map_err(|source| WizardError::Write {
             path: std::env::temp_dir(),
             source,
@@ -240,52 +274,61 @@ impl<'a> WizardBuilder<'a, MappingBuilt> {
         let draft_path = temp_dir.path().join("draft.json");
         write_json_pretty(
             &draft_path,
-            template_value,
+            &state.template_value,
             |source| WizardError::Serialize { source },
             |source, path| WizardError::Write { path, source },
         )?;
-        self.temp_dir = Some(temp_dir);
-        self.draft_path = Some(draft_path);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: DraftWritten {
+                template_value: state.template_value,
+                temp_dir,
+                draft_path,
+            },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, DraftWritten> {
-    pub(crate) fn maybe_open_editor(
-        mut self,
-    ) -> Result<WizardBuilder<'a, FinalReady>, WizardError> {
-        let draft_path = self
-            .draft_path
-            .as_ref()
-            .ok_or_else(|| WizardError::Prompt("missing draft path".to_string()))?;
-        if let Some(editor) = resolve_editor().filter(|_| self.prompter.allow_editor_prompt()) {
-            let open_editor = self.prompter.confirm("Open draft in editor?", true)?;
+    pub(crate) fn maybe_open_editor(self) -> Result<WizardBuilder<'a, FinalReady>, WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        let DraftWritten {
+            template_value,
+            temp_dir: _temp_dir,
+            draft_path,
+        } = state;
+        if let Some(editor) = resolve_editor().filter(|_| prompter.allow_editor_prompt()) {
+            let open_editor = prompter.confirm("Open draft in editor?", true)?;
             if open_editor {
-                open_in_editor(&editor, draft_path)?;
+                open_in_editor(&editor, &draft_path)?;
             }
         }
-
-        let template_value = self
-            .template_value
-            .take()
-            .ok_or_else(|| WizardError::Prompt("missing template".to_string()))?;
         let final_value = if draft_path.exists() {
-            load_template(draft_path)?
+            load_template(&draft_path)?
         } else {
             template_value
         };
-        self.final_value = Some(final_value);
-        Ok(self.transition())
+        Ok(WizardBuilder {
+            options,
+            prompter,
+            state: FinalReady { final_value },
+        })
     }
 }
 
 impl<'a> WizardBuilder<'a, FinalReady> {
-    pub(crate) fn finalize_write(mut self) -> Result<(), WizardError> {
-        let final_value = self
-            .final_value
-            .take()
-            .ok_or_else(|| WizardError::Prompt("missing final value".to_string()))?;
-        finalize_write(self.prompter, self.options, final_value)
+    pub(crate) fn finalize_write(self) -> Result<(), WizardError> {
+        let WizardBuilder {
+            options,
+            prompter,
+            state,
+        } = self;
+        finalize_write(prompter, options, state.final_value)
     }
 }
 
