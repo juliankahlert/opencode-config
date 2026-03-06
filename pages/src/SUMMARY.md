@@ -13,6 +13,8 @@
 - [Git Specialist](./absurd/git.md)
 - [Expert Analyst](./absurd/expert.md)
 - [Coder](./absurd/coder.md)
+- [JSON/YAML Coder](./absurd/json-yaml-coder.md)
+- [Shell Coder](./absurd/shell-coder.md)
 - [Test Runner](./absurd/test.md)
 - [Code Reviewer](./absurd/checker.md)
 - [UX Designer](./absurd/ux.md)

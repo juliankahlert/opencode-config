@@ -63,7 +63,7 @@ graph TD
         GEN["general<br/>Model: simple-fast"]
         GIT["git<br/>Model: smart"]
         XPT["expert<br/>Model: consultant"]
-        WPM["wp-manager<br/>Model: orchestrate"]
+        WPM["wp-manager<br/>Model: smart-fast"]
         COD["coder<br/>Model: coder"]
         TST["test<br/>Model: simple"]
         CHK["checker<br/>Model: smart-fast"]
@@ -71,6 +71,8 @@ graph TD
         DBG["debug<br/>Model: consultant"]
         SEC["security<br/>Model: smart"]
         TWR["technical-writer<br/>Model: coder"]
+        SHC["shell-coder<br/>Model: coder"]
+        JYC["json-yaml-coder<br/>Model: coder"]
     end
 ```
 
@@ -80,12 +82,12 @@ Template variables map to capability tiers, not specific model names (which chan
 
 | Variable | Tier | Capability Profile | Used By |
 |----------|------|-------------------|---------|
-| `{{orchestrate}}` | High | Long-context reasoning, workflow management, multi-step planning | interactive, autonom, wp-manager |
+| `{{orchestrate}}` | High | Long-context reasoning, workflow management, multi-step planning | interactive, autonom |
 | `{{consultant}}` | High | Deep architectural analysis, complex investigation, expert judgment | expert, debug |
 | `{{smart}}` | High | Careful analysis, nuanced decisions, comprehensive review | git, review, security |
-| `{{smart-fast}}` | Mid-High | Fast analysis with good judgment, quick reviews | build, checker |
-| `{{coder}}` | Mid-High | Code generation, implementation, technical fluency | coder, ux, technical-writer |
-| `{{plan}}` | High | Structured planning, document generation, visual output | plan |
+| `{{smart-fast}}` | Mid-High | Fast analysis with good judgment, quick reviews | build, checker, wp-manager |
+| `{{coder}}` | Mid-High | Code generation, implementation, technical fluency | coder, ux, technical-writer, shell-coder, json-yaml-coder |
+| `{{plan}}` | High | Structured planning, document generation, visual output | plan, research |
 | `{{simple}}` | Mid | Reliable execution of well-defined tasks, structured reporting | test |
 | `{{simple-fast}}` | Mid | Fast execution of focused tasks, discovery, minor edits | explore, general |
 | `{{cheap}}` | Low | Minimal tasks requiring no reasoning (titles, labels, orchestration) | title, doc |
@@ -97,22 +99,24 @@ Template variables map to capability tiers, not specific model names (which chan
 | interactive | Y | - | - | - | - | - | - | - | Y* |
 | autonom | Y | - | - | - | - | - | - | - | Y* |
 | wp-manager | Y | - | - | - | - | - | - | - | Y* |
-| explore | Y | Y | - | - | - | - | Y | Y | - |
+| explore | Y | Y | - | - | Y | - | Y | Y | - |
 | general | Y | Y | Y | Y | Y | Y | Y | Y | - |
 | git | Y | Y | - | - | Y | Y | Y | - | - |
 | expert | Y | Y | - | - | Y | Y | Y | Y | - |
 | coder | Y | Y | Y | Y | Y | Y | Y | Y | - |
 | test | - | Y | - | - | Y | Y | Y | - | - |
 | checker | - | Y | - | - | Y | Y | Y | - | - |
-| ux | - | Y | Y | Y | Y | Y | Y | Y | - |
+| ux | Y | Y | Y | Y | Y | Y | Y | Y | - |
 | research | Y | Y | - | - | - | Y | Y | Y | Y* |
 | review | Y | Y | - | - | - | Y | Y | Y | Y* |
 | build | Y | Y | Y | Y | Y | Y | Y | Y | Y* |
-| plan | Y | Y | Y | Y | Y | Y | Y | Y | Y* |
+| plan | Y | - | - | - | Y | - | - | - | Y* |
 | debug | Y | Y | - | - | Y | Y | Y | Y | - |
 | security | - | Y | - | - | Y | Y | Y | Y | - |
 | doc | Y | - | - | - | Y | - | - | - | Y* |
 | technical-writer | Y | Y | Y | Y | - | Y | Y | Y | - |
+| shell-coder | - | Y | Y | Y | Y | Y | Y | - | - |
+| json-yaml-coder | - | Y | Y | Y | Y | Y | Y | - | - |
 | title | - | - | - | - | - | - | - | - | - |
 
 *\* `todowrite` only (no `todoread` — uses `list` instead)*
@@ -204,6 +208,8 @@ flowchart TD
         direction TB
         WPM["wp-manager<br/>Pre-analyze → Implement → Test → Review → Commit<br/>Halts: workpackage committed"]
         C["coder<br/>Implement → Test → Fix<br/>Halts: tests pass (≤3 retries)"]
+        SC["shell-coder<br/>Implement → Validate → Fix<br/>Halts: shellcheck passes (≤3 retries)"]
+        JY["json-yaml-coder<br/>Implement → Validate → Fix<br/>Halts: file parses (≤3 retries)"]
         E["explore<br/>Search → Spawn → Merge<br/>Halts: findings sufficient"]
         R["research<br/>Search → Spawn → Collect → Fill gaps<br/>Halts: evidence complete"]
         T["technical-writer<br/>Outline → Author → Verify syntax<br/>Halts: valid mermaid + links"]
@@ -221,10 +227,12 @@ flowchart TD
 | **coder** | `read` file scope | `write`, `edit`, `bash` | Report modified files | Delegate to `@test` | Tests pass (≤3 retries) |
 | **explore** | `read`, `grep` for discovery | Spawn sub-explorers | Findings + Summary | Evaluate coverage | Findings answer the question |
 | **research** | `read`, `grep`, web search | Spawn recursive `@research` | Structured report | Check evidence gaps | No gaps remain |
-| **plan** | Explore findings via `@explore` | Author mdbook pages | `mdbook build` | `question` to user | User approves plan |
+| **plan** | Explore findings via `@explore` | Delegate to `@technical-writer` | `mdbook build` | `question` to user | User approves plan |
 | **doc** | Explore findings via `@explore` | Delegate to `@technical-writer` | `todowrite` progress | `mdbook build` + `question` | User approves documentation |
 | **technical-writer** | `read` source, explore findings | `write` mdbook pages | Page path + summary | Re-read, check mermaid syntax | Valid page with diagrams |
 | **expert** | Delegate to `@explore` | Synthesize analysis | Analysis + Work Packages | Evaluate completeness | Grounded recommendation produced |
+| **shell-coder** | `read` file scope | Implement POSIX sh script | Report modified files | `shellcheck` + execution | Validation passes (≤3 retries) |
+| **json-yaml-coder** | `read` file scope | Edit via Python or `edit` | Report modified files | Parse file to confirm well-formed | Validation passes (≤3 retries) |
 | **checker** | `read` code under review | Analyze against criteria | Structured review verdict | Check severity thresholds | Verdict delivered |
 
 ### Circuit Breakers Prevent Infinite Loops
@@ -241,10 +249,10 @@ flowchart LR
 
 | Circuit Breaker | Limit | Applies To |
 |-----------------|-------|------------|
-| Verify → Fix | 3 retries | build, coder |
+| Verify → Fix | 3 retries | build, coder, ux, shell-coder, json-yaml-coder |
 | Review → Fix | 2 retries | interactive |
 | Done-gate → Replan | 2 retries | interactive |
-| User feedback rounds | 2 rounds | interactive, plan, doc |
+| User feedback rounds | 2 rounds | interactive, doc |
 | Writer rework | 2 retries | doc |
 | Build fix | 3 retries | doc, plan |
 | Autonomous loops | **Unbounded** | autonom (retries until pass) |
@@ -367,8 +375,8 @@ The tool access matrix enforces isolation structurally — it is not a suggestio
 
 | Agent Type | File Read | File Write | Why |
 |-----------|-----------|------------|-----|
-| **Orchestrators** (interactive, autonom) | No | No | Prevents context pollution from code |
+| **Orchestrators** (interactive, autonom, plan) | No | No | Prevents context pollution from code |
 | **Doc orchestrator** (doc) | No | No | Coordinates writers, never reads/writes pages |
 | **Researchers** (explore, research, expert) | Yes | No | Can observe but not mutate |
-| **Implementers** (coder, ux, technical-writer) | Yes | Yes | Need full file access for their work |
+| **Implementers** (coder, ux, technical-writer, shell-coder, json-yaml-coder) | Yes | Yes | Need full file access for their work |
 | **Verifiers** (test, checker, security) | Yes | No | Read-only ensures they cannot "fix" what they review |

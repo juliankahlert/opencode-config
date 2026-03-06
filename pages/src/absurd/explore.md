@@ -14,8 +14,30 @@ It explicitly disallows returning full file contents to maintain focus and effic
 | `grep` | Yes |
 | `list` | Yes |
 | `webfetch`, `websearch`, `codesearch`, `google_search` | Yes |
-| `write`, `edit`, `bash`, `glob` | No |
+| `bash` | Yes (read-only Python invocations only; for JSON/YAML parsing) |
+| `write`, `edit`, `glob` | No |
 | `todoread`, `todowrite` | No |
+
+## Python-first Rule for JSON/YAML
+
+When inspecting structured data files, prefer Python one-liners via `bash` over manual parsing or regex. Examples:
+
+1. **Read a JSON key:**
+   ```bash
+   python3 -c "import json,sys; d=json.load(open('file.json')); print(d['key'])"
+   ```
+
+2. **Filter JSON array for objects with status=="ok":**
+   ```bash
+   python3 -c "import json,sys; print([o for o in json.load(open('data.json')) if o.get('status')=='ok'])"
+   ```
+
+3. **Read YAML and print a nested value (requires pyyaml):**
+   ```bash
+   python3 -c "import yaml,sys; d=yaml.safe_load(open('file.yaml')); print(d['path']['to']['key'])"
+   ```
+
+> **Note:** Bash access is limited to read-only Python invocations; no file writes or arbitrary shell commands.
 
 ## Process
 

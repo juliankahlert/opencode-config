@@ -1,6 +1,6 @@
 # Workpackage Manager
 
-**Mode:** Subagent | **Model:** `{{orchestrate}}`
+**Mode:** Subagent | **Model:** `{{smart-fast}}`
 
 Orchestrates the complete lifecycle of a single workpackage on behalf of the autonomous orchestrator. Receives the selected workpackage, performs expert pre-analysis, dispatches implementers, runs verification and review loops, and commits on success.
 
