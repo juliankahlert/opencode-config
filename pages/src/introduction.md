@@ -109,6 +109,7 @@ graph TD
         GEN[General Purpose]
         GIT[Git Specialist]
         XPT[Expert Analyst]
+        WPM[Workpackage Manager]
         COD[Coder]
         TST[Test Runner]
         CHK[Code Reviewer]
@@ -128,6 +129,7 @@ graph TD
 
     AUT -->|delegates| EXP
     AUT -->|delegates| XPT
+    AUT -->|delegates| WPM
     AUT -->|delegates| COD
     AUT -->|delegates| TST
     AUT -->|delegates| CHK

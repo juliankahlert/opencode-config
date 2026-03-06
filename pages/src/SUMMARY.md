@@ -7,6 +7,7 @@
 - [Overview](./absurd/overview.md)
 - [Interactive Orchestrator](./absurd/interactive.md)
 - [Autonomous Orchestrator](./absurd/autonom.md)
+- [Workpackage Manager](./absurd/wp-manager.md)
 - [Explorer](./absurd/explore.md)
 - [General Purpose](./absurd/general.md)
 - [Git Specialist](./absurd/git.md)

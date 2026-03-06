@@ -157,18 +157,27 @@ Explicit step templates outperform generic "think step by step" instructions.
 
 ## 9. Output Format Specification (+20-40%)
 
-Always specify exactly how the model should structure its response.
+Always specify exactly how the model should structure its response. Prefer Markdown tables and headers — they are human-readable, diff-friendly, and natively rendered by every LLM.
 
-```json
-{
-  "reasoning": "step-by-step thinking",
-  "sources": ["list of sources referenced"],
-  "answer": "final answer",
-  "confidence": "high|medium|low"
-}
+**Example — specify the expected response layout in Markdown:**
+
+```markdown
+## Reasoning
+Step-by-step thinking goes here.
+
+## Sources
+
+| # | Source | Relevance |
+|---|--------|-----------|
+| 1 | source name or link | why it matters |
+
+## Answer
+Final answer goes here.
+
+- **Confidence:** high · medium · low
 ```
 
-> **Rule:** Use JSON schema, XML structure, or markdown table — be explicit.
+> **Rule:** Use Markdown structure (tables, headers, bullet lists) for output format specs — be explicit.
 
 ---
 

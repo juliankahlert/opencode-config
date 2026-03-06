@@ -63,6 +63,7 @@ graph TD
         GEN["general<br/>Model: simple-fast"]
         GIT["git<br/>Model: smart"]
         XPT["expert<br/>Model: consultant"]
+        WPM["wp-manager<br/>Model: orchestrate"]
         COD["coder<br/>Model: coder"]
         TST["test<br/>Model: simple"]
         CHK["checker<br/>Model: smart-fast"]
@@ -79,7 +80,7 @@ Template variables map to capability tiers, not specific model names (which chan
 
 | Variable | Tier | Capability Profile | Used By |
 |----------|------|-------------------|---------|
-| `{{orchestrate}}` | High | Long-context reasoning, workflow management, multi-step planning | interactive, autonom |
+| `{{orchestrate}}` | High | Long-context reasoning, workflow management, multi-step planning | interactive, autonom, wp-manager |
 | `{{consultant}}` | High | Deep architectural analysis, complex investigation, expert judgment | expert, debug |
 | `{{smart}}` | High | Careful analysis, nuanced decisions, comprehensive review | git, review, security |
 | `{{smart-fast}}` | Mid-High | Fast analysis with good judgment, quick reviews | build, checker |
@@ -95,6 +96,7 @@ Template variables map to capability tiers, not specific model names (which chan
 |-------|------|------|-------|------|------|------|------|-----|------|
 | interactive | Y | - | - | - | - | - | - | - | Y* |
 | autonom | Y | - | - | - | - | - | - | - | Y* |
+| wp-manager | Y | - | - | - | - | - | - | - | Y* |
 | explore | Y | Y | - | - | - | - | Y | Y | - |
 | general | Y | Y | Y | Y | Y | Y | Y | Y | - |
 | git | Y | Y | - | - | Y | Y | Y | - | - |
@@ -200,6 +202,7 @@ flowchart TD
 
     subgraph "Subagent Loops"
         direction TB
+        WPM["wp-manager<br/>Pre-analyze → Implement → Test → Review → Commit<br/>Halts: workpackage committed"]
         C["coder<br/>Implement → Test → Fix<br/>Halts: tests pass (≤3 retries)"]
         E["explore<br/>Search → Spawn → Merge<br/>Halts: findings sufficient"]
         R["research<br/>Search → Spawn → Collect → Fill gaps<br/>Halts: evidence complete"]
@@ -213,6 +216,7 @@ flowchart TD
 |-------|--------------------------|------------------------|------------------------|------------------------------|--------------------------|
 | **interactive** | `list` to poll subagent status | Delegate via `task` | `todowrite` progress | `question` to user | User confirms at each gate |
 | **autonom** | `list` to poll subagent status | Delegate via `task` | `todowrite` progress | Check all packages | All packages pass verification |
+| **wp-manager** | `list` to poll subagent status | Delegate via `task` | `todowrite` progress | Check workpackage gates | Workpackage committed |
 | **build** | `read`, `grep` for orientation | `write`, `edit`, `bash` | Structured output format | Run tests and linters | Exit code 0, 0 failures |
 | **coder** | `read` file scope | `write`, `edit`, `bash` | Report modified files | Delegate to `@test` | Tests pass (≤3 retries) |
 | **explore** | `read`, `grep` for discovery | Spawn sub-explorers | Findings + Summary | Evaluate coverage | Findings answer the question |

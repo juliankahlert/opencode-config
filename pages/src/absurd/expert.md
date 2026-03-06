@@ -55,11 +55,13 @@ Analysis:
 [key findings with file paths and line references]
 
 Work Packages:
-1. [package name]
-   Scope: [what this package implements]
-   Files: [list of files this package will modify]
-   Rationale: [why this is a separate package]
-2. ...
+
+| id | scope | files | description | dependencies |
+|----|-------|-------|-------------|--------------|
+| 1a | API route handlers | src/routes/auth.ts, src/routes/middleware.ts | Implement JWT validation middleware and attach to protected routes | (none) |
+| 1b | Database schema | src/db/migrations/004_sessions.sql, src/db/models/session.ts | Add session table and model for refresh token storage | (none) |
+| 1c | Test fixtures | tests/auth.test.ts, tests/fixtures/tokens.ts | Create test fixtures and integration tests for auth flow | 1a, 1b |
+...
 
 Recommendation:
 [preferred approach with justification]
