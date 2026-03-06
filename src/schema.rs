@@ -75,7 +75,7 @@ pub fn generate_schema_file(options: SchemaGenerateOptions) -> Result<PathBuf, S
     Ok(path)
 }
 
-fn build_schema(palette: &Palette) -> Value {
+pub(crate) fn build_schema(palette: &Palette) -> Value {
     let mut agent_props = Map::new();
     for agent in palette.agents.keys() {
         agent_props.insert(

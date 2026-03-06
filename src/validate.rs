@@ -24,6 +24,9 @@
 //!  ReportReady          cross-check placeholders against palette
 //!    │
 //!    ▼
+//!  SchemaValidated      validate rendered output against JSON Schema
+//!    │
+//!    ▼
 //!  Report               final counts + findings list
 //! ```
 
@@ -38,7 +41,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::config::{AgentConfig, ModelConfigs, Palette, Reasoning};
-use crate::template::{TemplateError, load_template};
+use crate::schema::{build_schema, validate_against_schema};
+use crate::substitute::substitute;
+use crate::template::{TemplateError, build_mapping, load_template};
 
 #[derive(Debug, Clone)]
 pub struct ValidateOpts {
@@ -186,10 +191,16 @@ struct TemplatesDiscovered {
 
 struct PlaceholdersScanned {
     palette_info: Option<PaletteInfo>,
+    template_paths: Vec<PathBuf>,
     scans: Vec<TemplateScan>,
 }
 
-struct ReportReady;
+struct ReportReady {
+    palette_info: Option<PaletteInfo>,
+    template_paths: Vec<PathBuf>,
+}
+
+struct SchemaValidated;
 
 struct ValidatorBuilder<State> {
     config_dir: PathBuf,
@@ -209,15 +220,6 @@ impl ValidatorBuilder<Start> {
     fn new(config_dir: &Path, opts: ValidateOpts) -> Result<Self, ValidateError> {
         let mut report = ReportBuilder::default();
         let placeholder_regex = Regex::new(r"\{\{\s*([^\}]+?)\s*\}\}")?;
-        if opts.schema {
-            report.warn_or_error(
-                opts.strict,
-                "validate".to_string(),
-                "$.schema".to_string(),
-                "schema-not-implemented",
-                "schema validation is not implemented".to_string(),
-            );
-        }
         if opts.env_allow == Some(true) || opts.env_mask_logs == Some(true) {
             let mut details = Vec::new();
             if let Some(value) = opts.env_allow.filter(|v| *v) {
@@ -364,6 +366,7 @@ impl ValidatorBuilder<TemplatesDiscovered> {
             palettes_path: self.palettes_path,
             state: PlaceholdersScanned {
                 palette_info: self.state.palette_info,
+                template_paths: self.state.template_paths,
                 scans,
             },
         })
@@ -390,12 +393,96 @@ impl ValidatorBuilder<PlaceholdersScanned> {
             report: self.report,
             placeholder_regex: self.placeholder_regex,
             palettes_path: self.palettes_path,
-            state: ReportReady,
+            state: ReportReady {
+                palette_info: self.state.palette_info,
+                template_paths: self.state.template_paths,
+            },
         }
     }
 }
 
 impl ValidatorBuilder<ReportReady> {
+    fn validate_schemas(mut self) -> ValidatorBuilder<SchemaValidated> {
+        if !self.opts.schema {
+            return ValidatorBuilder {
+                config_dir: self.config_dir,
+                opts: self.opts,
+                report: self.report,
+                placeholder_regex: self.placeholder_regex,
+                palettes_path: self.palettes_path,
+                state: SchemaValidated,
+            };
+        }
+
+        let Some(palette_info) = &self.state.palette_info else {
+            return ValidatorBuilder {
+                config_dir: self.config_dir,
+                opts: self.opts,
+                report: self.report,
+                placeholder_regex: self.placeholder_regex,
+                palettes_path: self.palettes_path,
+                state: SchemaValidated,
+            };
+        };
+
+        for palette_summary in &palette_info.palettes {
+            let schema = build_schema(&palette_summary.palette);
+            let mapping = build_mapping(&palette_summary.palette);
+
+            for template_path in &self.state.template_paths {
+                let file_display = display_path(template_path, &self.config_dir);
+
+                let mut value = match load_template(template_path) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                if substitute(&mut value, &mapping, false).is_err() {
+                    continue;
+                }
+
+                match validate_against_schema(&schema, &value) {
+                    Ok(findings) => {
+                        for finding in findings {
+                            let path = if finding.instance_path.is_empty() {
+                                "$".to_string()
+                            } else {
+                                format!("${}", finding.instance_path)
+                            };
+                            self.report.warn_or_error(
+                                self.opts.strict,
+                                file_display.clone(),
+                                path,
+                                "schema-violation",
+                                format!("[palette: {}] {}", palette_summary.name, finding.message),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        self.report.push(
+                            Severity::Error,
+                            file_display.clone(),
+                            "$.schema".to_string(),
+                            "schema-error",
+                            format!("[palette: {}] {}", palette_summary.name, e),
+                        );
+                    }
+                }
+            }
+        }
+
+        ValidatorBuilder {
+            config_dir: self.config_dir,
+            opts: self.opts,
+            report: self.report,
+            placeholder_regex: self.placeholder_regex,
+            palettes_path: self.palettes_path,
+            state: SchemaValidated,
+        }
+    }
+}
+
+impl ValidatorBuilder<SchemaValidated> {
     fn build(self) -> Result<Report, ValidateError> {
         Ok(self.report.build())
     }
@@ -557,6 +644,7 @@ pub fn validate_dir(config_dir: &Path, opts: ValidateOpts) -> Result<Report, Val
         .discover_templates()?
         .scan_templates()?
         .validate_placeholders()
+        .validate_schemas()
         .build()
 }
 
@@ -1192,7 +1280,7 @@ palettes:
     }
 
     #[test]
-    fn validate_warns_on_schema_flag() {
+    fn validate_schema_clean_template_no_findings() {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path();
         write_palettes(config_dir);
@@ -1213,11 +1301,17 @@ palettes:
 
         let report = validate_dir(config_dir, opts).expect("validate");
         assert_eq!(report.counts.errors, 0);
+        assert_eq!(report.counts.warnings, 0);
         assert!(
             report
                 .findings
                 .iter()
-                .any(|f| f.kind == "schema-not-implemented")
+                .all(|f| f.kind != "schema-not-implemented"),
+            "schema-not-implemented stub should be removed"
+        );
+        assert!(
+            report.findings.iter().all(|f| f.kind != "schema-violation"),
+            "clean template should produce no schema violations"
         );
     }
 
@@ -1429,6 +1523,149 @@ palettes:
         assert!(
             finding.message.contains("alt"),
             "finding should mention the palette missing the agent"
+        );
+    }
+
+    #[test]
+    fn validate_schema_strict_fails_on_violation() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // model is a number instead of a string — violates schema
+        write_template(
+            config_dir,
+            "bad_type.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: true,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+        assert!(
+            !schema_violations.is_empty(),
+            "expected schema-violation finding for wrong type"
+        );
+        assert!(
+            schema_violations
+                .iter()
+                .all(|f| f.severity == Severity::Error),
+            "strict mode should elevate schema violations to errors"
+        );
+        assert!(report.counts.errors > 0);
+    }
+
+    #[test]
+    fn validate_schema_false_skips_check() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // model is a number — would be a violation if schema were enabled
+        write_template(
+            config_dir,
+            "bad_type.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| !f.kind.starts_with("schema-")),
+            "schema=false should skip all schema-related checks, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind.starts_with("schema-"))
+                .map(|f| format!("{}: {}", f.kind, f.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_schema_multi_palette_checks() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+
+        // Two palettes: "default" has agent "build", "alt" has agent "deploy"
+        let yaml = r#"
+palettes:
+  default:
+    agents:
+      build:
+        model: openrouter/openai/gpt-4o
+  alt:
+    agents:
+      deploy:
+        model: openrouter/anthropic/claude-3.5-sonnet
+"#;
+        fs::write(config_dir.join("model-configs.yaml"), yaml).expect("write palettes");
+        // Template has model as a number — violates schema for "default" palette
+        // (which defines "build"), but not for "alt" (which doesn't define "build",
+        // and additionalProperties is true)
+        write_template(
+            config_dir,
+            "bad_type.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+        assert!(
+            !schema_violations.is_empty(),
+            "expected at least one schema-violation finding"
+        );
+        // Violations should mention palette "default" (which defines "build")
+        assert!(
+            schema_violations
+                .iter()
+                .any(|f| f.message.contains("default")),
+            "expected violation mentioning palette 'default', got: {:?}",
+            schema_violations
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+        // No violations should mention palette "alt" (which does not define "build")
+        assert!(
+            schema_violations
+                .iter()
+                .all(|f| !f.message.contains("[palette: alt]")),
+            "palette 'alt' should not trigger schema violations for agent 'build'"
         );
     }
 }
