@@ -850,4 +850,71 @@ palettes:
             "backward-compat substitute() should resolve env vars"
         );
     }
+
+    #[test]
+    fn env_mask_logs_masking_contract() {
+        // Verify the masking infrastructure is correctly wired when
+        // env_mask_logs=true: the rendered output must contain the full
+        // secret (masking applies only to diagnostic/log output), and the
+        // format_masked function produces the expected redacted form.
+        //
+        // Note: There is no tracing/logging dependency in this crate, so
+        // we cannot capture structured log output at the unit level.  The
+        // integration test `render_env_mask_logs_does_not_alter_output`
+        // covers the stderr/log masking contract via the CLI.
+        let _lock = env_lock();
+        let guard = EnvVarGuard::new("OCFG_TEST_API_KEY");
+        let secret = "sk-super-secret-value-42";
+        guard.set(secret);
+
+        let config_dir = TempDir::new().expect("config dir");
+        write_model_configs(config_dir.path(), SAMPLE_YAML);
+        write_template(config_dir.path(), "default.json", ENV_TEMPLATE);
+
+        let mut opts = default_options(config_dir.path());
+        opts.env_allow = true;
+        opts.env_mask_logs = true;
+
+        let output = RenderBuilder::new(opts)
+            .load_configs()
+            .expect("load configs")
+            .resolve_palette()
+            .expect("resolve palette")
+            .resolve_template_path()
+            .expect("resolve template path")
+            .load_template()
+            .expect("load template")
+            .apply_alias_models()
+            .expect("apply alias models")
+            .build_mapping()
+            .expect("build mapping")
+            .resolve_env_vars()
+            .expect("resolve env vars")
+            .substitute()
+            .expect("substitute")
+            .serialize()
+            .expect("serialize");
+
+        let rendered = &output.data;
+
+        // Rendered output MUST contain the full secret (masking is for logs only)
+        assert!(
+            rendered.contains(secret),
+            "rendered output must contain full secret, not masked"
+        );
+
+        // Verify the masked form matches the expected pattern
+        let masked = crate::env_resolve::format_masked(secret);
+        assert_eq!(
+            masked, "sk-***",
+            "masked form should redact after first 3 chars"
+        );
+
+        // The masked form should NOT replace the real value in rendered output
+        let value: Value = serde_json::from_str(rendered).expect("parse json");
+        assert_eq!(
+            value["agent"]["build"]["apiKey"], secret,
+            "env_mask_logs must not affect the rendered output value"
+        );
+    }
 }

@@ -418,6 +418,43 @@ mod tests {
     }
 
     #[test]
+    fn env_permissive_unresolved_env_left_intact() {
+        // With an empty env mapping and strict=false, an unresolved
+        // env:-prefixed placeholder should remain verbatim in the output.
+        let mut value = json!({
+            "key": "{{env:SOME_VAR}}"
+        });
+        let mapping = HashMap::new();
+        let env_map: HashMap<String, String> = HashMap::new();
+
+        substitute_with_env(&mut value, &mapping, Some(&env_map), false)
+            .expect("permissive substitute");
+
+        assert_eq!(
+            value["key"], "{{env:SOME_VAR}}",
+            "unresolved env placeholder should remain in permissive mode"
+        );
+    }
+
+    #[test]
+    fn env_prefix_not_resolved_without_env_mapping() {
+        // substitute() (no env mapping) must not resolve env:-prefixed
+        // placeholders — they are opaque keys handled by the builder layer.
+        let mut value = json!({
+            "model": "{{build}}",
+            "apiKey": "{{env:MY_VAR}}"
+        });
+
+        substitute(&mut value, &mapping(), false).expect("substitute");
+
+        assert_eq!(value["model"], "openrouter/build");
+        assert_eq!(
+            value["apiKey"], "{{env:MY_VAR}}",
+            "env: placeholder must not be resolved without env mapping"
+        );
+    }
+
+    #[test]
     fn env_value_is_always_string() {
         // The env_mapping type is HashMap<String, String>, so non-string
         // values cannot be passed.  Verify that numeric-looking env values

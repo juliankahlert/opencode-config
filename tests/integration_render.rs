@@ -405,7 +405,8 @@ fn render_env_allow_strict_missing_var_fails() {
     let work_dir = TempDir::new().expect("work dir");
 
     let mut cmd = cargo_bin_cmd!("opencode-config");
-    cmd.current_dir(work_dir.path())
+    let assert = cmd
+        .current_dir(work_dir.path())
         .env_remove("OCFG_INTEG_RENDER_KEY")
         .arg("--config")
         .arg(config_dir.path())
@@ -422,6 +423,12 @@ fn render_env_allow_strict_missing_var_fails() {
         .arg("--strict")
         .assert()
         .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("OCFG_INTEG_RENDER_KEY") || stderr.contains("env:"),
+        "stderr should mention the missing variable or env: prefix, got: {stderr}"
+    );
 }
 
 #[test]

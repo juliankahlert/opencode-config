@@ -273,6 +273,25 @@ mod tests {
         }
     }
 
+    fn write_full_config(
+        config_dir: &Path,
+        strict: Option<bool>,
+        env_allow: Option<bool>,
+        env_mask_logs: Option<bool>,
+    ) {
+        let mut data = String::new();
+        if let Some(v) = strict {
+            data.push_str(&format!("strict: {v}\n"));
+        }
+        if let Some(v) = env_allow {
+            data.push_str(&format!("env_allow: {v}\n"));
+        }
+        if let Some(v) = env_mask_logs {
+            data.push_str(&format!("env_mask_logs: {v}\n"));
+        }
+        fs::write(config_dir.join("config.yaml"), data).expect("write config.yaml");
+    }
+
     #[test]
     fn resolve_run_options_respects_precedence() {
         let _lock = env_lock();
@@ -327,5 +346,58 @@ mod tests {
             }
             other => panic!("unexpected result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_allow_and_env_mask_logs_precedence() {
+        let _lock = env_lock();
+        let env_guard = EnvVarGuard::new("OPENCODE_STRICT");
+        env_guard.remove();
+
+        let config_home = TempDir::new().expect("config home");
+        let config_dir = config_home.path();
+
+        // Defaults: both false when nothing is configured
+        let options = resolve_run_options(None, None, None, config_dir).expect("resolve defaults");
+        assert!(!options.env_allow, "default env_allow should be false");
+        assert!(
+            !options.env_mask_logs,
+            "default env_mask_logs should be false"
+        );
+
+        // Config sets both true
+        write_full_config(config_dir, None, Some(true), Some(true));
+        let options =
+            resolve_run_options(None, None, None, config_dir).expect("resolve config true");
+        assert!(options.env_allow, "config env_allow=true should propagate");
+        assert!(
+            options.env_mask_logs,
+            "config env_mask_logs=true should propagate"
+        );
+
+        // CLI false overrides config true
+        let options = resolve_run_options(None, Some(false), Some(false), config_dir)
+            .expect("resolve CLI override");
+        assert!(
+            !options.env_allow,
+            "CLI env_allow=false should override config"
+        );
+        assert!(
+            !options.env_mask_logs,
+            "CLI env_mask_logs=false should override config"
+        );
+
+        // CLI true works without any config file
+        let empty_dir = TempDir::new().expect("empty config home");
+        let options = resolve_run_options(None, Some(true), Some(true), empty_dir.path())
+            .expect("resolve CLI only");
+        assert!(
+            options.env_allow,
+            "CLI env_allow=true should work without config"
+        );
+        assert!(
+            options.env_mask_logs,
+            "CLI env_mask_logs=true should work without config"
+        );
     }
 }
