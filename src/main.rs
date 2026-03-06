@@ -8,7 +8,7 @@ use opencode_config::cli::{
 };
 use opencode_config::options::{resolve_env_flag_sources, resolve_run_options};
 use opencode_config::{
-    completions, config, create, palette_io, render, schema, template, validate, wizard,
+    completions, config, create, diff, palette_io, render, schema, template, validate, wizard,
 };
 
 fn resolve_env_allow(cli: &Cli) -> Option<bool> {
@@ -195,11 +195,24 @@ fn main() -> anyhow::Result<()> {
                 if args.out == "-" {
                     println!("{data}", data = output.data);
                 } else {
-                    println!(
-                        "[DRY-RUN] Would write {lines} lines to {path}",
-                        lines = output.lines,
-                        path = args.out
-                    );
+                    let path = &args.out;
+                    let target = std::path::Path::new(path);
+                    let (old_label, old_content) = if target.exists() {
+                        let content = std::fs::read_to_string(target)
+                            .with_context(|| format!("failed to read existing {path}"))?;
+                        (format!("a/{path}"), content)
+                    } else {
+                        ("/dev/null".to_string(), String::new())
+                    };
+                    let new_label = format!("b/{path}");
+                    let diff_text =
+                        diff::format_diff(&old_label, &old_content, &new_label, &output.data);
+                    if diff_text.is_empty() {
+                        println!("[DRY-RUN] No changes to {path}");
+                    } else {
+                        print!("{diff_text}");
+                        std::process::exit(1);
+                    }
                 }
                 return Ok(());
             }
