@@ -307,3 +307,160 @@ fn create_env_mask_logs_does_not_affect_output() {
     // env-mask-logs should not affect the actual output file content
     assert_eq!(value["agent"]["build"]["apiKey"], "real-secret-value");
 }
+
+// ---------------------------------------------------------------------------
+// Dry-run integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_create_dry_run_no_existing() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        // exit 1: changes detected (new file)
+        .code(1)
+        .stdout(
+            predicate::str::contains("--- /dev/null")
+                .and(predicate::str::contains("+++ b/"))
+                .and(predicate::str::contains("openrouter/openai/gpt-4o")),
+        );
+
+    // Output file must NOT exist
+    assert!(
+        !out_path.exists(),
+        "dry-run must not create the output file"
+    );
+}
+
+#[test]
+fn test_create_dry_run_with_existing() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // Write an existing file with different content
+    fs::write(
+        &out_path,
+        r#"{
+  "agent": {
+    "build": {
+      "model": "old-model",
+      "variant": "old-variant"
+    }
+  }
+}"#,
+    )
+    .expect("write existing");
+    let before = fs::read_to_string(&out_path).expect("read before");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("---")
+                .and(predicate::str::contains("+++"))
+                .and(predicate::str::contains("-"))
+                .and(predicate::str::contains("+")),
+        );
+
+    // Existing file must be unchanged
+    let after = fs::read_to_string(&out_path).expect("read after");
+    assert_eq!(before, after, "dry-run must not modify the existing file");
+}
+
+#[test]
+fn test_create_dry_run_skips_force_check() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // Write an existing file — without --force, normal create would fail
+    fs::write(&out_path, "existing content").expect("write existing");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        // Should succeed (exit 1 = diff detected, not an error)
+        .code(1);
+
+    // File should still contain original content
+    let after = fs::read_to_string(&out_path).expect("read after");
+    assert_eq!(
+        after, "existing content",
+        "dry-run must not modify the existing file"
+    );
+}
+
+#[test]
+fn test_create_dry_run_no_changes() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // First, create the file normally so it matches the rendered output
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .success();
+
+    let before = fs::read_to_string(&out_path).expect("read before");
+
+    // Now dry-run against the identical file — should report no changes
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .success() // exit 0: no changes
+        .stdout(predicate::str::contains("No changes"));
+
+    // File must be byte-identical
+    let after = fs::read_to_string(&out_path).expect("read after");
+    assert_eq!(before, after, "dry-run must not modify the file");
+}

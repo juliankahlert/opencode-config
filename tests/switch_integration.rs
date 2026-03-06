@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use predicates::prelude::predicate;
+use predicates::prelude::{PredicateBooleanExt, predicate};
 use tempfile::TempDir;
 
 const SAMPLE_YAML: &str = r#"
@@ -134,4 +134,123 @@ fn switch_rejects_template_with_path() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid template name"));
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_switch_dry_run_shows_diff() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // Write an existing file with different content
+    fs::write(
+        &out_path,
+        r#"{
+  "agent": {
+    "build": {
+      "model": "old-model"
+    }
+  }
+}"#,
+    )
+    .expect("write existing");
+    let before = fs::read_to_string(&out_path).expect("read before");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("switch")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("---")
+                .and(predicate::str::contains("+++"))
+                .and(predicate::str::contains("openrouter/openai/gpt-4o")),
+        );
+
+    // Existing file must be unchanged
+    let after = fs::read_to_string(&out_path).expect("read after");
+    assert_eq!(before, after, "dry-run must not modify the existing file");
+}
+
+#[test]
+fn test_switch_dry_run_no_write() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // No existing file — switch --dry-run should print diff from /dev/null
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("switch")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("--- /dev/null").and(predicate::str::contains("+++ b/")));
+
+    // Output file must NOT exist
+    assert!(
+        !out_path.exists(),
+        "dry-run must not create the output file"
+    );
+}
+
+#[test]
+fn test_switch_dry_run_no_changes() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+    let work_dir = TempDir::new().expect("work dir");
+    let out_path = work_dir.path().join("opencode.json");
+
+    // First, create the file normally so it matches the rendered output
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .success();
+
+    let before = fs::read_to_string(&out_path).expect("read before");
+
+    // Now switch --dry-run with the same template/palette — should report no changes
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("switch")
+        .arg("default")
+        .arg("github")
+        .arg("--dry-run")
+        .arg("-o")
+        .arg(&out_path)
+        .assert()
+        .success() // exit 0: no changes
+        .stdout(predicate::str::contains("No changes"));
+
+    // File must be byte-identical
+    let after = fs::read_to_string(&out_path).expect("read after");
+    assert_eq!(before, after, "dry-run must not modify the file");
 }

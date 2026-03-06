@@ -27,6 +27,31 @@ fn resolve_env_mask_logs(cli: &Cli) -> Option<bool> {
     }
 }
 
+/// Print a unified diff of the rendered preview against the existing output
+/// file (or `/dev/null` when the file does not exist yet).
+///
+/// Exits with code 1 when changes are detected (mirroring `diff(1)` semantics)
+/// and returns normally (exit 0) when the output would be identical.
+fn handle_dry_run_diff(out_path: &std::path::Path, preview: &str) -> anyhow::Result<()> {
+    let display_path = out_path.display().to_string();
+    let (old_label, old_content) = if out_path.exists() {
+        let content = std::fs::read_to_string(out_path)
+            .with_context(|| format!("failed to read existing {display_path}"))?;
+        (format!("a/{display_path}"), content)
+    } else {
+        ("/dev/null".to_string(), String::new())
+    };
+    let new_label = format!("b/{display_path}");
+    let diff_text = diff::format_diff(&old_label, &old_content, &new_label, preview);
+    if diff_text.is_empty() {
+        println!("[DRY-RUN] No changes to {display_path}");
+    } else {
+        print!("{diff_text}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -68,10 +93,16 @@ fn main() -> anyhow::Result<()> {
                     palette,
                     out: args.out.clone(),
                     force: args.force,
+                    dry_run: args.dry_run,
                     run_options,
                     config_dir,
                 };
-                create::run(options).context("create command failed")?;
+                if args.dry_run {
+                    let preview = create::run_preview(options).context("create dry-run failed")?;
+                    handle_dry_run_diff(&args.out, &preview)?;
+                } else {
+                    create::run(options).context("create command failed")?;
+                }
             }
         }
         Commands::Switch(args) => {
@@ -94,10 +125,16 @@ fn main() -> anyhow::Result<()> {
                 // Map Commands::Switch to CreateOptions with force = true
                 // so switch implicitly overwrites the output file.
                 force: true,
+                dry_run: args.dry_run,
                 run_options,
                 config_dir,
             };
-            create::run(options).context("switch command failed")?;
+            if args.dry_run {
+                let preview = create::run_preview(options).context("switch dry-run failed")?;
+                handle_dry_run_diff(&args.out, &preview)?;
+            } else {
+                create::run(options).context("switch command failed")?;
+            }
         }
         Commands::ListTemplates => {
             let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;

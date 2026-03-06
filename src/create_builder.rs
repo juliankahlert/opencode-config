@@ -121,6 +121,19 @@ impl CreateBuilder<Start> {
         builder.write_output()
     }
 
+    /// Run the full pipeline but return the rendered output instead of writing.
+    ///
+    /// Skips `ensure_output` — no filesystem side-effects occur.
+    pub fn run_preview(self) -> Result<String, CreateError> {
+        let builder = self.select_palette()?;
+        let builder = builder.load_template()?;
+        let builder = builder.apply_aliases()?;
+        let builder = builder.build_mapping()?;
+        let builder = builder.resolve_env_vars()?;
+        let builder = builder.substitute_placeholders()?;
+        builder.preview()
+    }
+
     pub fn ensure_output(self) -> Result<Self, CreateError> {
         if self.options.out.exists() && !self.options.force {
             return Err(CreateError::OutputExists {
@@ -289,6 +302,12 @@ impl CreateBuilder<FinalReady> {
             |source, path| CreateError::Write { path, source },
         )
     }
+
+    /// Return the rendered JSON string without touching the filesystem.
+    pub fn preview(&self) -> Result<String, CreateError> {
+        serde_json::to_string_pretty(&self.state.template_value)
+            .map_err(|source| CreateError::Serialize { source })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +452,7 @@ mod tests {
             palette: palette.to_string(),
             out: out.to_path_buf(),
             force,
+            dry_run: false,
             run_options: default_run_options(),
             config_dir: config_dir.to_path_buf(),
         }
@@ -450,6 +470,7 @@ mod tests {
             palette: palette.to_string(),
             out: out.to_path_buf(),
             force: false,
+            dry_run: false,
             run_options,
             config_dir: config_dir.to_path_buf(),
         }

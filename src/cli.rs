@@ -113,6 +113,10 @@ pub struct CreateArgs {
     #[arg(long)]
     pub force: bool,
 
+    /// Preview output without writing files
+    #[arg(long, conflicts_with = "interactive")]
+    pub dry_run: bool,
+
     /// Run the interactive create wizard
     #[arg(short = 'i', long = "interactive")]
     pub interactive: bool,
@@ -129,6 +133,10 @@ pub struct SwitchArgs {
     /// Output file path
     #[arg(short = 'o', long, default_value = "opencode.json")]
     pub out: PathBuf,
+
+    /// Preview output without writing files
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Parser, Debug)]

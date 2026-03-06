@@ -39,10 +39,15 @@ pub struct CreateOptions {
     pub palette: String,
     pub out: PathBuf,
     pub force: bool,
+    pub dry_run: bool,
     pub run_options: RunOptions,
     pub config_dir: PathBuf,
 }
 
 pub fn run(options: CreateOptions) -> Result<(), CreateError> {
     CreateBuilder::new(options).run()
+}
+
+pub fn run_preview(options: CreateOptions) -> Result<String, CreateError> {
+    CreateBuilder::new(options).run_preview()
 }
