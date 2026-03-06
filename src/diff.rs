@@ -235,4 +235,153 @@ mod tests {
             "should show added emoji line"
         );
     }
+
+    #[test]
+    fn test_context_radius_three() {
+        // 11 lines: change only the middle one (line 6, 0-indexed 5).
+        // With context radius 3, lines 3-5 before and 5-7 after the change
+        // should appear, but lines 1 and 11 (far edges) should NOT.
+        let old = "\
+line01
+line02
+line03
+line04
+line05
+MIDDLE_OLD
+line07
+line08
+line09
+line10
+line11
+";
+        let new = "\
+line01
+line02
+line03
+line04
+line05
+MIDDLE_NEW
+line07
+line08
+line09
+line10
+line11
+";
+        let result = format_diff("a/file", old, "b/file", new);
+
+        // Exactly one hunk
+        let hunk_count = result.matches("@@").count();
+        assert_eq!(
+            hunk_count, 2,
+            "expected one hunk (two @@ markers), got {hunk_count}"
+        );
+
+        // Changed lines present
+        assert!(result.contains("-MIDDLE_OLD"), "should show removed line");
+        assert!(result.contains("+MIDDLE_NEW"), "should show added line");
+
+        // Context lines within radius 3 should appear (as space-prefixed)
+        assert!(
+            result.contains(" line05"),
+            "line05 should be context (radius 3)"
+        );
+        assert!(
+            result.contains(" line07"),
+            "line07 should be context (radius 3)"
+        );
+
+        // Lines beyond radius 3 should NOT appear in the diff at all
+        assert!(
+            !result.contains("line01"),
+            "line01 is beyond context radius and should be absent"
+        );
+        assert!(
+            !result.contains("line11"),
+            "line11 is beyond context radius and should be absent"
+        );
+    }
+
+    #[test]
+    fn test_two_separate_hunks() {
+        // Two changes separated by 8 unchanged lines (> 2*3) so hunks
+        // cannot merge.
+        let old = "\
+line01
+CHANGE_A_OLD
+line03
+line04
+line05
+line06
+line07
+line08
+line09
+line10
+CHANGE_B_OLD
+line12
+";
+        let new = "\
+line01
+CHANGE_A_NEW
+line03
+line04
+line05
+line06
+line07
+line08
+line09
+line10
+CHANGE_B_NEW
+line12
+";
+        let result = format_diff("a/file", old, "b/file", new);
+
+        // Two hunks → four @@ markers (each hunk has an opening pair)
+        let hunk_count = result.matches("@@").count();
+        assert_eq!(
+            hunk_count, 4,
+            "expected two hunks (four @@ markers), got {hunk_count}"
+        );
+
+        // Both changes present
+        assert!(
+            result.contains("-CHANGE_A_OLD"),
+            "first hunk should show removed line A"
+        );
+        assert!(
+            result.contains("+CHANGE_A_NEW"),
+            "first hunk should show added line A"
+        );
+        assert!(
+            result.contains("-CHANGE_B_OLD"),
+            "second hunk should show removed line B"
+        );
+        assert!(
+            result.contains("+CHANGE_B_NEW"),
+            "second hunk should show added line B"
+        );
+    }
+
+    #[test]
+    fn test_whitespace_only_change() {
+        let old = "{\n  \"key\": \"value\"\n}\n";
+        let new = "{\n    \"key\": \"value\"\n}\n";
+        let result = format_diff("a/file", old, "b/file", new);
+
+        assert!(
+            !result.is_empty(),
+            "whitespace-only change should produce a non-empty diff"
+        );
+        assert!(result.contains("@@"), "should contain a hunk header");
+
+        // The old 2-space indented line should be removed
+        assert!(
+            result.contains("-  \"key\": \"value\""),
+            "should show removed 2-space line"
+        );
+        // The new 4-space indented line should be added
+        assert!(
+            result.contains("+    \"key\": \"value\""),
+            "should show added 4-space line"
+        );
+    }
 }
