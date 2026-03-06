@@ -22,7 +22,32 @@ pub fn substitute(
     mapping: &HashMap<String, Value>,
     strict: bool,
 ) -> Result<(), SubstituteError> {
-    SubstituteBuilder::new(mapping)?.strict(strict).apply(value)
+    substitute_with_env(value, mapping, None, strict)
+}
+
+/// Substitute placeholders using a model-config mapping merged with
+/// optional environment entries.  Model-config keys take precedence.
+///
+/// Environment values are accepted as `String` and always injected as
+/// `Value::String`, enforcing the env-is-always-string contract at the
+/// type level.
+pub fn substitute_with_env(
+    value: &mut Value,
+    mapping: &HashMap<String, Value>,
+    env_mapping: Option<&HashMap<String, String>>,
+    strict: bool,
+) -> Result<(), SubstituteError> {
+    match env_mapping {
+        Some(env) => {
+            let mut merged: HashMap<String, Value> = env
+                .iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect();
+            merged.extend(mapping.iter().map(|(k, v)| (k.clone(), v.clone())));
+            SubstituteBuilder::new(&merged)?.strict(strict).apply(value)
+        }
+        None => SubstituteBuilder::new(mapping)?.strict(strict).apply(value),
+    }
 }
 
 pub struct SubstituteBuilder<'a> {
@@ -191,7 +216,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{SubstituteError, substitute};
+    use super::{SubstituteError, substitute, substitute_with_env};
 
     fn mapping() -> HashMap<String, Value> {
         HashMap::from([
@@ -305,5 +330,129 @@ mod tests {
         substitute(&mut value, &mapping(), false).expect("substitute");
 
         assert_eq!(value["message"], "Count is 3");
+    }
+
+    #[test]
+    fn env_only_placeholder() {
+        let mut value = json!({
+            "host": "{{db-host}}"
+        });
+        let mapping = HashMap::new();
+        let env_map = HashMap::from([("db-host".to_string(), "localhost".to_string())]);
+
+        substitute_with_env(&mut value, &mapping, Some(&env_map), false).expect("substitute");
+
+        assert_eq!(value["host"], "localhost");
+    }
+
+    #[test]
+    fn model_config_wins_over_env() {
+        let mut value = json!({ "model": "{{build}}" });
+
+        let mapping = HashMap::from([(
+            "build".to_string(),
+            Value::String("openrouter/build".to_string()),
+        )]);
+        let env_map = HashMap::from([("build".to_string(), "env-override/build".to_string())]);
+
+        substitute_with_env(&mut value, &mapping, Some(&env_map), false).expect("substitute");
+
+        assert_eq!(value["model"], "openrouter/build");
+    }
+
+    #[test]
+    fn env_fills_gap() {
+        let mut value = json!({
+            "model": "{{build}}",
+            "host": "{{db-host}}"
+        });
+
+        let mapping = HashMap::from([(
+            "build".to_string(),
+            Value::String("openrouter/build".to_string()),
+        )]);
+        let env_map = HashMap::from([("db-host".to_string(), "db.example.com".to_string())]);
+
+        substitute_with_env(&mut value, &mapping, Some(&env_map), false).expect("substitute");
+
+        assert_eq!(value["model"], "openrouter/build");
+        assert_eq!(value["host"], "db.example.com");
+    }
+
+    #[test]
+    fn strict_rejects_missing_env() {
+        let mut value = json!({
+            "host": "{{db-host}}"
+        });
+
+        let mapping = HashMap::new();
+        let env_map: HashMap<String, String> = HashMap::new();
+
+        let error = substitute_with_env(&mut value, &mapping, Some(&env_map), true)
+            .expect_err("should fail");
+
+        match error {
+            SubstituteError::MissingPlaceholder { key } => {
+                assert_eq!(key, "db-host");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_none_fallback() {
+        let mut value = json!({
+            "model": "{{build}}",
+            "missing": "{{unknown}}"
+        });
+
+        let mapping = HashMap::from([(
+            "build".to_string(),
+            Value::String("openrouter/build".to_string()),
+        )]);
+
+        substitute_with_env(&mut value, &mapping, None, false).expect("substitute");
+
+        assert_eq!(value["model"], "openrouter/build");
+        assert_eq!(value["missing"], "{{unknown}}");
+    }
+
+    #[test]
+    fn env_value_is_always_string() {
+        // The env_mapping type is HashMap<String, String>, so non-string
+        // values cannot be passed.  Verify that numeric-looking env values
+        // are injected as Value::String, not Value::Number.
+        let mut value = json!({
+            "port": "{{db-port}}",
+            "flag": "{{db-flag}}"
+        });
+
+        let mapping = HashMap::new();
+        let env_map = HashMap::from([
+            ("db-port".to_string(), "3306".to_string()),
+            ("db-flag".to_string(), "true".to_string()),
+        ]);
+
+        substitute_with_env(&mut value, &mapping, Some(&env_map), false).expect("substitute");
+
+        assert!(
+            value["port"].is_string(),
+            "numeric env value must be String"
+        );
+        assert_eq!(value["port"], "3306");
+        assert!(
+            !value["port"].is_number(),
+            "env value must not become Number"
+        );
+
+        assert!(
+            value["flag"].is_string(),
+            "boolean-like env value must be String"
+        );
+        assert_eq!(value["flag"], "true");
+        assert!(
+            !value["flag"].is_boolean(),
+            "env value must not become Bool"
+        );
     }
 }
