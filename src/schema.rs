@@ -143,7 +143,11 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{SchemaGenerateOptions, generate_schema_file, validate_against_schema};
+    use crate::config::{AgentConfig, Palette};
+
+    use super::{
+        SchemaGenerateOptions, build_schema, generate_schema_file, validate_against_schema,
+    };
 
     #[test]
     fn generate_schema_writes_file() {
@@ -258,6 +262,192 @@ palettes:
             findings.len() >= 2,
             "expected at least 2 findings, got {}",
             findings.len()
+        );
+    }
+
+    /// Helper: build a [`Palette`] from a list of `(agent_name, model)` pairs.
+    fn make_palette(agents: &[(&str, &str)]) -> Palette {
+        use std::collections::BTreeMap;
+
+        let mut agent_map = BTreeMap::new();
+        for &(name, model) in agents {
+            agent_map.insert(
+                name.to_string(),
+                AgentConfig {
+                    model: model.to_string(),
+                    variant: None,
+                    reasoning: None,
+                },
+            );
+        }
+        Palette {
+            agents: agent_map,
+            mapping: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn build_schema_contains_expected_agents() {
+        let palette = make_palette(&[
+            ("build", "openrouter/openai/gpt-4o"),
+            ("deploy", "openrouter/anthropic/claude-3.5-sonnet"),
+        ]);
+
+        let schema = build_schema(&palette);
+
+        let agent_props = &schema["properties"]["agent"]["properties"];
+        assert!(
+            agent_props.get("build").is_some(),
+            "schema should contain agent 'build'"
+        );
+        assert!(
+            agent_props.get("deploy").is_some(),
+            "schema should contain agent 'deploy'"
+        );
+
+        // Each agent object must declare the standard sub-properties.
+        for name in &["build", "deploy"] {
+            let props = &agent_props[name]["properties"];
+            assert_eq!(props["model"]["type"], "string", "{name}: model type");
+            assert_eq!(props["variant"]["type"], "string", "{name}: variant type");
+            assert_eq!(
+                props["reasoningEffort"]["type"], "string",
+                "{name}: reasoningEffort type"
+            );
+            assert_eq!(
+                props["textVerbosity"]["type"], "string",
+                "{name}: textVerbosity type"
+            );
+        }
+    }
+
+    #[test]
+    fn build_schema_empty_palette_produces_valid_schema() {
+        let palette = make_palette(&[]);
+
+        let schema = build_schema(&palette);
+
+        // The schema itself must compile without error (structurally valid).
+        let result = validate_against_schema(&schema, &json!({}));
+        assert!(
+            result.is_ok(),
+            "empty-palette schema should compile: {:?}",
+            result.unwrap_err()
+        );
+
+        // An empty document should pass (no agents to check, additionalProperties: true).
+        let findings = result.unwrap();
+        assert!(
+            findings.is_empty(),
+            "empty doc against empty-palette schema should produce no findings"
+        );
+
+        // The schema should still have the top-level structure.
+        assert_eq!(
+            schema["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["agent"]["type"], "object");
+    }
+
+    #[test]
+    fn additional_properties_allows_extra_keys() {
+        let palette = make_palette(&[("build", "openrouter/openai/gpt-4o")]);
+        let schema = build_schema(&palette);
+
+        // Document with extra keys at every level: top-level, inside "agent",
+        // and inside the agent object itself.
+        let instance = json!({
+            "extra_top": true,
+            "agent": {
+                "build": {
+                    "model": "openrouter/openai/gpt-4o",
+                    "custom_key": "extra-value"
+                },
+                "unknown_agent": { "model": "something" }
+            }
+        });
+
+        let findings = validate_against_schema(&schema, &instance).expect("schema should compile");
+        assert!(
+            findings.is_empty(),
+            "extra keys should be allowed when additionalProperties is true, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_against_schema_with_realistic_document() {
+        let palette = make_palette(&[
+            ("build", "openrouter/openai/gpt-4o"),
+            ("task", "openrouter/anthropic/claude-3.5-sonnet"),
+            ("title", "openrouter/openai/gpt-4o-mini"),
+        ]);
+
+        let schema = build_schema(&palette);
+
+        // Realistic rendered opencode.json matching the schema.
+        let document = json!({
+            "agent": {
+                "build": {
+                    "model": "openrouter/openai/gpt-4o"
+                },
+                "task": {
+                    "model": "openrouter/anthropic/claude-3.5-sonnet",
+                    "variant": "claude-3.5-sonnet-v2",
+                    "reasoningEffort": "high",
+                    "textVerbosity": "verbose"
+                },
+                "title": {
+                    "model": "openrouter/openai/gpt-4o-mini"
+                }
+            }
+        });
+
+        let findings = validate_against_schema(&schema, &document).expect("schema should compile");
+        assert!(
+            findings.is_empty(),
+            "realistic document should pass schema validation, got: {findings:?}"
+        );
+
+        // Now introduce a type error in one agent and verify the violation is
+        // reported for that specific path.
+        let bad_document = json!({
+            "agent": {
+                "build": {
+                    "model": "openrouter/openai/gpt-4o"
+                },
+                "task": {
+                    "model": 12345,
+                    "reasoningEffort": false
+                },
+                "title": {
+                    "model": "openrouter/openai/gpt-4o-mini"
+                }
+            }
+        });
+
+        let findings =
+            validate_against_schema(&schema, &bad_document).expect("schema should compile");
+        assert!(
+            findings.len() >= 2,
+            "expected at least 2 findings for two type errors, got {}",
+            findings.len()
+        );
+
+        // Verify violations reference the correct paths.
+        let paths: Vec<&str> = findings.iter().map(|f| f.instance_path.as_str()).collect();
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.contains("task") && p.contains("model")),
+            "expected a finding for task.model, paths: {paths:?}"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.contains("task") && p.contains("reasoningEffort")),
+            "expected a finding for task.reasoningEffort, paths: {paths:?}"
         );
     }
 }

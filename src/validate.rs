@@ -1876,6 +1876,263 @@ palettes:
     }
 
     #[test]
+    fn validate_schema_non_strict_produces_warning() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // model is a number instead of a string — violates schema
+        write_template(
+            config_dir,
+            "bad_type.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+        assert!(
+            !schema_violations.is_empty(),
+            "expected schema-violation finding for wrong type"
+        );
+        assert!(
+            schema_violations
+                .iter()
+                .all(|f| f.severity == Severity::Warning),
+            "non-strict mode should produce warnings, not errors; got: {:?}",
+            schema_violations
+                .iter()
+                .map(|f| format!("{:?}: {}", f.severity, f.message))
+                .collect::<Vec<_>>()
+        );
+        // Warnings should not count as errors
+        assert_eq!(
+            report.counts.errors, 0,
+            "non-strict schema violations must not increment error count"
+        );
+        assert!(
+            report.counts.warnings > 0,
+            "non-strict schema violations must increment warning count"
+        );
+    }
+
+    #[test]
+    fn validate_schema_multiple_violations() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // Both model and variant are numbers — two distinct schema violations
+        write_template(
+            config_dir,
+            "multi_bad.json",
+            r#"{ "agent": { "build": { "model": 42, "variant": 99 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+        assert!(
+            schema_violations.len() >= 2,
+            "expected at least 2 schema-violation findings, got {}: {:?}",
+            schema_violations.len(),
+            schema_violations
+                .iter()
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+        // Verify that both model and variant paths are reported
+        let paths: Vec<&str> = schema_violations.iter().map(|f| f.path.as_str()).collect();
+        assert!(
+            paths.iter().any(|p| p.contains("model")),
+            "expected a violation for 'model' path, got paths: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.contains("variant")),
+            "expected a violation for 'variant' path, got paths: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn validate_schema_multi_template() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        // Clean template — uses proper placeholder that resolves to a string
+        write_template(
+            config_dir,
+            "clean.json",
+            r#"{ "agent": { "build": { "model": "{{agent-build-model}}" } } }"#,
+        );
+        // Bad template — model is a raw number, violates schema
+        write_template(
+            config_dir,
+            "bad_type.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+        assert!(
+            !schema_violations.is_empty(),
+            "expected at least one schema-violation finding"
+        );
+        // All violations should be attributed to the bad template
+        assert!(
+            schema_violations
+                .iter()
+                .all(|f| f.file.contains("bad_type")),
+            "violations should only come from bad_type.json, got files: {:?}",
+            schema_violations
+                .iter()
+                .map(|f| &f.file)
+                .collect::<Vec<_>>()
+        );
+        // Clean template should produce no violations
+        assert!(
+            schema_violations.iter().all(|f| !f.file.contains("clean")),
+            "clean.json should produce no schema violations"
+        );
+    }
+
+    #[test]
+    fn validate_schema_multi_template_multi_palette() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+
+        // Two palettes: "alpha" defines agent "build", "beta" defines agent "deploy"
+        let yaml = r#"
+palettes:
+  alpha:
+    agents:
+      build:
+        model: openrouter/openai/gpt-4o
+  beta:
+    agents:
+      deploy:
+        model: openrouter/anthropic/claude-3.5-sonnet
+"#;
+        fs::write(config_dir.join("model-configs.yaml"), yaml).expect("write palettes");
+
+        // Template targeting "build" with wrong type — violates alpha schema
+        write_template(
+            config_dir,
+            "build_bad.json",
+            r#"{ "agent": { "build": { "model": 42 } } }"#,
+        );
+        // Template targeting "deploy" with wrong type — violates beta schema
+        write_template(
+            config_dir,
+            "deploy_bad.json",
+            r#"{ "agent": { "deploy": { "model": 99 } } }"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: true,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let schema_violations: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.kind == "schema-violation")
+            .collect();
+
+        // build_bad.json should have violations from palette "alpha" (which defines "build")
+        let build_alpha: Vec<_> = schema_violations
+            .iter()
+            .filter(|f| f.file.contains("build_bad") && f.message.contains("alpha"))
+            .collect();
+        assert!(
+            !build_alpha.is_empty(),
+            "expected violation for build_bad.json from palette 'alpha', got: {:?}",
+            schema_violations
+                .iter()
+                .map(|f| format!("{}: {}", f.file, f.message))
+                .collect::<Vec<_>>()
+        );
+
+        // build_bad.json should NOT have violations from palette "beta"
+        // (beta does not define "build", so additionalProperties=true allows it)
+        let build_beta: Vec<_> = schema_violations
+            .iter()
+            .filter(|f| f.file.contains("build_bad") && f.message.contains("[palette: beta]"))
+            .collect();
+        assert!(
+            build_beta.is_empty(),
+            "build_bad.json should not violate beta schema (no 'build' agent), got: {:?}",
+            build_beta.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+
+        // deploy_bad.json should have violations from palette "beta" (which defines "deploy")
+        let deploy_beta: Vec<_> = schema_violations
+            .iter()
+            .filter(|f| f.file.contains("deploy_bad") && f.message.contains("beta"))
+            .collect();
+        assert!(
+            !deploy_beta.is_empty(),
+            "expected violation for deploy_bad.json from palette 'beta', got: {:?}",
+            schema_violations
+                .iter()
+                .map(|f| format!("{}: {}", f.file, f.message))
+                .collect::<Vec<_>>()
+        );
+
+        // deploy_bad.json should NOT have violations from palette "alpha"
+        let deploy_alpha: Vec<_> = schema_violations
+            .iter()
+            .filter(|f| f.file.contains("deploy_bad") && f.message.contains("[palette: alpha]"))
+            .collect();
+        assert!(
+            deploy_alpha.is_empty(),
+            "deploy_bad.json should not violate alpha schema (no 'deploy' agent), got: {:?}",
+            deploy_alpha.iter().map(|f| &f.message).collect::<Vec<_>>()
+        );
+    }
+
+    // -- env-placeholder validation tests ---------------------------------
+
+    #[test]
     fn validate_env_placeholder_excluded_from_palette_lookup() {
         let temp_dir = TempDir::new().expect("temp dir");
         let config_dir = temp_dir.path();
