@@ -109,6 +109,13 @@ pub enum ComposeError {
          run `decompose {name}` first to split it into fragments"
     )]
     NotAFragmentDir { name: String },
+
+    #[error("failed to remove input directory {}", path.display())]
+    Cleanup {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Records which source file contributed a value at a JSON path.
@@ -329,6 +336,14 @@ impl Composer {
             verify_roundtrip(out, content)?;
             info!("roundtrip verification passed");
         }
+
+        // Clean up input directory after successful write
+        let input_dir = &self.options.input_dir;
+        fs::remove_dir_all(input_dir).map_err(|source| ComposeError::Cleanup {
+            path: input_dir.clone(),
+            source,
+        })?;
+        info!(dir = %input_dir.display(), "removed input directory");
 
         Ok(())
     }
@@ -1271,5 +1286,73 @@ mod tests {
         let mut root = json!({"theme": "light"});
         set_at_path(&mut root, "theme", json!("dark"));
         assert_eq!(root["theme"], "dark");
+    }
+
+    // === cleanup ===
+
+    #[test]
+    fn run_removes_input_dir_after_write() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let input_dir = temp_dir.path().join("fragments");
+        fs::create_dir_all(&input_dir).expect("create dir");
+
+        write_file(input_dir.join("base.json"), r#"{"key": "value"}"#);
+
+        let out = temp_dir.path().join("opencode.json");
+        let options = default_options(
+            input_dir.clone(),
+            out.clone(),
+            temp_dir.path().to_path_buf(),
+        );
+
+        run(options).expect("compose should succeed");
+
+        assert!(out.exists(), "output file should exist");
+        assert!(
+            !input_dir.exists(),
+            "input directory should be removed after successful compose"
+        );
+    }
+
+    #[test]
+    fn cleanup_failure_returns_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let real_input = temp_dir.path().join("fragments");
+        fs::create_dir_all(&real_input).expect("create dir");
+
+        write_file(real_input.join("base.json"), r#"{"key": "value"}"#);
+
+        let out = temp_dir.path().join("opencode.json");
+
+        // Compose with real fragments, then swap in a bogus input_dir that
+        // doesn't exist so the cleanup removal fails.
+        // We test via Composer directly to control the options precisely.
+        let options = ComposeOptions {
+            input_dir: real_input.clone(),
+            out: out.clone(),
+            dry_run: false,
+            backup: false,
+            pretty: true,
+            verify: false,
+            force: false,
+            conflict: Conflict::Error,
+            run_options: RunOptions::default(),
+            config_dir: temp_dir.path().to_path_buf(),
+        };
+
+        let composer = Composer::new(options);
+        let merged = composer.compose().expect("compose");
+        let content = composer.serialize(&merged).expect("serialize");
+
+        // Remove the input_dir before write_output so cleanup fails
+        fs::remove_dir_all(&real_input).expect("pre-remove");
+
+        let result = composer.write_output(&content);
+        match result {
+            Err(ComposeError::Cleanup { path, .. }) => {
+                assert_eq!(path, real_input);
+            }
+            other => panic!("expected Cleanup error, got: {other:?}"),
+        }
     }
 }

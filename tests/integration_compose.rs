@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use assert_cmd::cargo::cargo_bin_cmd;
-use predicates::prelude::{PredicateBooleanExt, predicate};
+use predicates::prelude::{predicate, PredicateBooleanExt};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -128,6 +128,9 @@ fn compose_dry_run_exit_zero_when_unchanged() {
     cmd.arg(&frag_dir).arg("-o").arg(&out).assert().success();
 
     let before = fs::read_to_string(&out).expect("read before");
+
+    // Re-copy fragments because compose removes the input directory on success
+    copy_fragments(&fixture_fragments_dir(), &frag_dir);
 
     // Now dry-run against the identical file
     let mut cmd = compose_cmd(work_dir.path(), xdg.path());
