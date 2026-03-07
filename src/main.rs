@@ -55,6 +55,18 @@ fn handle_dry_run_diff(out_path: &std::path::Path, preview: &str) -> anyhow::Res
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    {
+        use tracing_subscriber::EnvFilter;
+
+        let default_level = if cli.verbose { "debug" } else { "warn" };
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
+
     match &cli.command {
         Commands::Create(args) => {
             let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;

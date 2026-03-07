@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use regex::{Captures, Regex};
 use serde_json::Value;
 use thiserror::Error;
+use tracing::trace;
 
 #[derive(Debug, Error)]
 pub enum SubstituteError {
@@ -37,6 +38,12 @@ pub fn substitute_with_env(
     env_mapping: Option<&HashMap<String, String>>,
     strict: bool,
 ) -> Result<(), SubstituteError> {
+    trace!(
+        mapping_keys = mapping.len(),
+        has_env = env_mapping.is_some(),
+        strict,
+        "starting substitution"
+    );
     match env_mapping {
         Some(env) => {
             let mut merged: HashMap<String, Value> = env
