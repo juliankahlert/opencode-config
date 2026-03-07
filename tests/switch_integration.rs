@@ -254,3 +254,50 @@ fn test_switch_dry_run_no_changes() {
     let after = fs::read_to_string(&out_path).expect("read after");
     assert_eq!(before, after, "dry-run must not modify the file");
 }
+
+#[test]
+fn switch_with_directory_template() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+
+    // Add a directory template
+    let template_dir = config_dir.path().join("template.d");
+    let dir_template = template_dir.join("dirswitch.d");
+    fs::create_dir_all(&dir_template).expect("create dirswitch.d");
+    fs::write(
+        dir_template.join("01-base.json"),
+        r#"{"agent": {"build": {"model": "{{build}}", "extra": "from-dir"}}}"#,
+    )
+    .expect("write base");
+
+    let work_dir = TempDir::new().expect("work dir");
+
+    // Create first with regular template
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("default")
+        .arg("github")
+        .assert()
+        .success();
+
+    // Switch to directory template
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("switch")
+        .arg("dirswitch")
+        .arg("github")
+        .assert()
+        .success();
+
+    let output_path = work_dir.path().join("opencode.json");
+    let data = fs::read_to_string(&output_path).expect("read output");
+    let value: serde_json::Value = serde_json::from_str(&data).expect("parse json");
+
+    assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
+    assert_eq!(value["agent"]["build"]["extra"], "from-dir");
+}

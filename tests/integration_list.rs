@@ -60,3 +60,28 @@ fn list_palettes_outputs_names() {
         .stdout(predicate::str::contains("alpha"))
         .stdout(predicate::str::contains("beta"));
 }
+
+#[test]
+fn list_templates_includes_directory_templates() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+
+    // Add a directory template
+    let template_dir = config_dir.path().join("template.d");
+    let dir_template = template_dir.join("dironly.d");
+    fs::create_dir_all(&dir_template).expect("create dir template");
+    fs::write(dir_template.join("base.json"), "{}").expect("write base");
+
+    let work_dir = TempDir::new().expect("work dir");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("list-templates")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("default"))
+        .stdout(predicate::str::contains("minimal"))
+        .stdout(predicate::str::contains("dironly"));
+}

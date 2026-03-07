@@ -464,3 +464,45 @@ fn test_create_dry_run_no_changes() {
     let after = fs::read_to_string(&out_path).expect("read after");
     assert_eq!(before, after, "dry-run must not modify the file");
 }
+
+#[test]
+fn create_with_directory_template() {
+    let config_dir = TempDir::new().expect("config dir");
+    write_config(config_dir.path());
+
+    // Add a directory template alongside existing file templates.
+    // Use "extra" rather than "variant" to test merge, because alias
+    // resolution overwrites variant from the palette agent config.
+    let template_dir = config_dir.path().join("template.d");
+    let dir_template = template_dir.join("dircreate.d");
+    fs::create_dir_all(&dir_template).expect("create dircreate.d");
+    fs::write(
+        dir_template.join("01-base.json"),
+        r#"{"agent": {"build": {"model": "{{build}}", "extra": "base-value"}}}"#,
+    )
+    .expect("write base");
+    fs::write(
+        dir_template.join("02-override.json"),
+        r#"{"agent": {"build": {"extra": "overridden"}}}"#,
+    )
+    .expect("write override");
+
+    let work_dir = TempDir::new().expect("work dir");
+
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir.path())
+        .arg("--config")
+        .arg(config_dir.path())
+        .arg("create")
+        .arg("dircreate")
+        .arg("github")
+        .assert()
+        .success();
+
+    let output_path = work_dir.path().join("opencode.json");
+    let data = fs::read_to_string(&output_path).expect("read output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+
+    assert_eq!(value["agent"]["build"]["model"], "openrouter/openai/gpt-4o");
+    assert_eq!(value["agent"]["build"]["extra"], "overridden");
+}
