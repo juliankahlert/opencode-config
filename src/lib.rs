@@ -5,6 +5,7 @@ pub mod create;
 pub(crate) mod create_builder;
 pub mod diff;
 pub(crate) mod env_resolve;
+pub mod mapping;
 pub mod options;
 pub mod palette_io;
 pub mod render;
