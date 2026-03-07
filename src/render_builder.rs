@@ -60,7 +60,6 @@
 //! containing the serialized string and a line count.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use regex::Regex;
 use serde_json::Value;
@@ -70,7 +69,8 @@ use crate::env_resolve::{Allow, EnvResolver};
 use crate::render::{OutputFormat, RenderError, RenderOptions, RenderOutput};
 use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
-    apply_alias_models, build_mapping, load_template, resolve_template_path_allowing_path,
+    TemplateSource, apply_alias_models, build_mapping, load_template_or_dir,
+    resolve_template_source_allowing_path,
 };
 
 pub(crate) struct RenderBuilder<State> {
@@ -87,7 +87,7 @@ pub(crate) struct PaletteResolved {
 }
 pub(crate) struct TemplatePathResolved {
     palette: Palette,
-    template_path: PathBuf,
+    template_source: TemplateSource,
 }
 pub(crate) struct TemplateLoaded {
     palette: Palette,
@@ -154,13 +154,13 @@ impl RenderBuilder<PaletteResolved> {
                 name: options.template.clone(),
             });
         }
-        let template_path =
-            resolve_template_path_allowing_path(&options.config_dir, &options.template);
+        let template_source =
+            resolve_template_source_allowing_path(&options.config_dir, &options.template)?;
         Ok(RenderBuilder {
             options,
             state: TemplatePathResolved {
                 palette: state.palette,
-                template_path,
+                template_source,
             },
         })
     }
@@ -169,7 +169,7 @@ impl RenderBuilder<PaletteResolved> {
 impl RenderBuilder<TemplatePathResolved> {
     pub(crate) fn load_template(self) -> Result<RenderBuilder<TemplateLoaded>, RenderError> {
         let RenderBuilder { options, state } = self;
-        let template_value = load_template(&state.template_path)?;
+        let template_value = load_template_or_dir(&state.template_source)?;
         Ok(RenderBuilder {
             options,
             state: TemplateLoaded {
@@ -234,7 +234,7 @@ impl RenderBuilder<MappingBuilt> {
         if options.env_allow {
             let env_placeholders = collect_env_placeholders(&template_value);
             if !env_placeholders.is_empty() {
-                let resolver = EnvResolver::new(Allow::All, options.strict, options.env_mask_logs);
+                let resolver = EnvResolver::new(Allow::All, options.strict);
                 let resolved = resolver
                     .resolve(&env_placeholders)
                     .map_err(resolve_to_render_error)?;
@@ -346,7 +346,6 @@ fn collect_env_walk(value: &Value, re: &Regex, out: &mut HashMap<String, String>
 fn resolve_to_render_error(err: crate::env_resolve::ResolveError) -> RenderError {
     use crate::env_resolve::ResolveError;
     let key = match err {
-        ResolveError::NotAllowed { var } => format!("env:{var} (requires --env-allow)"),
         ResolveError::MissingEnvVar { var } => format!("env:{var}"),
     };
     RenderError::Substitute(SubstituteError::MissingPlaceholder { key })
@@ -853,10 +852,8 @@ palettes:
 
     #[test]
     fn env_mask_logs_masking_contract() {
-        // Verify the masking infrastructure is correctly wired when
-        // env_mask_logs=true: the rendered output must contain the full
-        // secret (masking applies only to diagnostic/log output), and the
-        // format_masked function produces the expected redacted form.
+        // Verify that env_mask_logs=true does not alter the rendered output.
+        // Masking applies only to diagnostic/log output, not the rendered JSON.
         //
         // Note: There is no tracing/logging dependency in this crate, so
         // we cannot capture structured log output at the unit level.  The
@@ -903,14 +900,7 @@ palettes:
             "rendered output must contain full secret, not masked"
         );
 
-        // Verify the masked form matches the expected pattern
-        let masked = crate::env_resolve::format_masked(secret);
-        assert_eq!(
-            masked, "sk-***",
-            "masked form should redact after first 3 chars"
-        );
-
-        // The masked form should NOT replace the real value in rendered output
+        // The rendered JSON value must be the real secret, not a masked form
         let value: Value = serde_json::from_str(rendered).expect("parse json");
         assert_eq!(
             value["agent"]["build"]["apiKey"], secret,

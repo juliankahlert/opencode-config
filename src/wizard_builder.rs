@@ -53,7 +53,7 @@ use crate::env_resolve::{Allow, EnvResolver, ResolveError};
 use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
     apply_alias_models, build_mapping, is_valid_template_name, list_templates, load_template,
-    resolve_template_name_path, write_json_pretty,
+    load_template_or_dir, resolve_template_source, write_json_pretty,
 };
 use crate::wizard::{WizardError, WizardOptions, WizardPrompter};
 
@@ -206,8 +206,8 @@ impl<'a> WizardBuilder<'a, PaletteSelected> {
                 name: state.template_name,
             });
         }
-        let template_path = resolve_template_name_path(&options.config_dir, &state.template_name);
-        let template_value = load_template(&template_path)?;
+        let source = resolve_template_source(&options.config_dir, &state.template_name)?;
+        let template_value = load_template_or_dir(&source)?;
         Ok(WizardBuilder {
             options,
             prompter,
@@ -295,7 +295,6 @@ impl<'a> WizardBuilder<'a, MappingBuilt> {
 
         let env_allow = options.run_options.env_allow;
         let strict = options.run_options.strict;
-        let mask_logs = options.run_options.env_mask_logs;
 
         if env_allow {
             let placeholders = collect_placeholders(&template_value)?;
@@ -306,12 +305,9 @@ impl<'a> WizardBuilder<'a, MappingBuilt> {
                 .collect();
 
             if !env_entries.is_empty() {
-                let resolver = EnvResolver::new(Allow::All, strict, mask_logs);
+                let resolver = EnvResolver::new(Allow::All, strict);
                 let resolved = resolver.resolve(&env_entries).map_err(|err| {
                     let key = match err {
-                        ResolveError::NotAllowed { var } => {
-                            format!("env:{var} (requires --env-allow)")
-                        }
                         ResolveError::MissingEnvVar { var } => format!("env:{var}"),
                     };
                     WizardError::Substitute(SubstituteError::MissingPlaceholder { key })

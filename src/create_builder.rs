@@ -60,8 +60,8 @@ use crate::create::{CreateError, CreateOptions};
 use crate::env_resolve::{Allow, EnvResolver, ResolveError};
 use crate::substitute::{SubstituteError, substitute};
 use crate::template::{
-    apply_alias_models, build_mapping, is_valid_template_name, load_template,
-    resolve_template_name_path, write_json_pretty,
+    apply_alias_models, build_mapping, is_valid_template_name, load_template_or_dir,
+    resolve_template_source, write_json_pretty,
 };
 
 pub struct CreateBuilder<State> {
@@ -165,8 +165,8 @@ impl CreateBuilder<PaletteSelected> {
                 name: options.template.clone(),
             });
         }
-        let template_path = resolve_template_name_path(&options.config_dir, &options.template);
-        let template_value = load_template(&template_path)?;
+        let source = resolve_template_source(&options.config_dir, &options.template)?;
+        let template_value = load_template_or_dir(&source)?;
         Ok(CreateBuilder {
             options,
             state: TemplateLoaded {
@@ -240,19 +240,10 @@ impl CreateBuilder<MappingBuilt> {
                 let synthetic: HashMap<String, String> =
                     env_keys.into_iter().map(|k| (k.clone(), k)).collect();
 
-                let resolver = EnvResolver::new(
-                    Allow::All,
-                    options.run_options.strict,
-                    options.run_options.env_mask_logs,
-                );
+                let resolver = EnvResolver::new(Allow::All, options.run_options.strict);
 
                 let resolved = resolver.resolve(&synthetic).map_err(|e| match e {
                     ResolveError::MissingEnvVar { var } => {
-                        CreateError::Substitute(SubstituteError::MissingPlaceholder {
-                            key: format!("env:{var}"),
-                        })
-                    }
-                    ResolveError::NotAllowed { var } => {
                         CreateError::Substitute(SubstituteError::MissingPlaceholder {
                             key: format!("env:{var}"),
                         })
