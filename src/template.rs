@@ -203,7 +203,7 @@ fn count_template_files(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-pub(crate) fn resolve_template_source(
+pub fn resolve_template_source(
     config_dir: &Path,
     name: &str,
 ) -> Result<TemplateSource, TemplateError> {
@@ -307,7 +307,7 @@ pub fn load_template_or_dir(source: &TemplateSource) -> Result<Value, TemplateEr
     }
 }
 
-pub(crate) fn is_valid_template_name(name: &str) -> bool {
+pub fn is_valid_template_name(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Parser;
@@ -51,6 +51,43 @@ fn handle_dry_run_diff(out_path: &std::path::Path, preview: &str) -> anyhow::Res
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Resolve the compose `input` argument to a fragment directory.
+///
+/// Returns `(resolved_dir, template_name)` where `template_name` is
+/// `Some(name)` when the input was resolved via template-name lookup.
+fn resolve_compose_input(
+    input: &str,
+    config_dir: &Path,
+) -> Result<(PathBuf, Option<String>), compose::ComposeError> {
+    let literal = PathBuf::from(input);
+
+    // 1) Prefer literal directories when they exist.
+    if literal.is_dir() {
+        return Ok((literal, None));
+    }
+
+    // 2) If input looks like a template name, attempt template resolution.
+    if template::is_valid_template_name(input) {
+        let source = template::resolve_template_source(config_dir, input)?;
+        match source {
+            template::TemplateSource::Directory(dir) => {
+                return Ok((dir, Some(input.to_string())));
+            }
+            template::TemplateSource::File(ref path) if path.exists() => {
+                return Err(compose::ComposeError::NotAFragmentDir {
+                    name: input.to_string(),
+                });
+            }
+            // Fallback path from resolve_template_source does not exist —
+            // template was not found; fall through to literal-path treatment.
+            template::TemplateSource::File(_) => {}
+        }
+    }
+
+    // 3) Fall back to literal path (compose will report InputDirNotFound).
+    Ok((literal, None))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -396,6 +433,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Compose(args) => {
             let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;
+            let (input_dir, _template_name) = resolve_compose_input(&args.input, &config_dir)?;
+            // TODO(WP2): _template_name indicates template-name mode was used;
+            // this will drive header/provenance behaviour in a future work package.
             let cli_strict = if cli.no_strict {
                 Some(false)
             } else {
@@ -419,7 +459,7 @@ fn main() -> anyhow::Result<()> {
                 (false, false) => true,
             };
             let options = compose::ComposeOptions {
-                input_dir: args.input_dir.clone(),
+                input_dir,
                 out: args.out.clone(),
                 dry_run: args.dry_run,
                 backup: args.backup,

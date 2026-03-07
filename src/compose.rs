@@ -103,6 +103,12 @@ pub enum ComposeError {
 
     #[error("no template fragments found in {}", path.display())]
     EmptyInputDir { path: PathBuf },
+
+    #[error(
+        "template `{name}` resolved to a file, not a fragment directory; \
+         run `decompose {name}` first to split it into fragments"
+    )]
+    NotAFragmentDir { name: String },
 }
 
 /// Records which source file contributed a value at a JSON path.

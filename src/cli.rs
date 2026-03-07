@@ -339,9 +339,15 @@ pub struct DecomposeArgs {
 
 #[derive(Parser, Debug)]
 pub struct ComposeArgs {
-    /// Input directory containing fragment files
+    /// Template name or directory path to compose.
+    ///
+    /// Accepts either a **template name** resolved under `template.d/`
+    /// (e.g. `default`) or a **literal directory path** containing fragment
+    /// files (e.g. `./fragments`). Values containing a path separator
+    /// (`/` or `\`) are treated as filesystem paths; plain names are
+    /// resolved as template names first, falling back to a local directory.
     #[arg(default_value = ".")]
-    pub input_dir: PathBuf,
+    pub input: String,
 
     /// Output file path
     #[arg(short = 'o', long, default_value = "opencode.json")]

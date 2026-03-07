@@ -446,3 +446,88 @@ fn compose_minify_output_is_compact() {
         "minified output must not contain indentation"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 10. Template-name resolution for compose
+// ---------------------------------------------------------------------------
+
+/// Build a command that uses `--config` to point at a custom config directory.
+fn config_compose_cmd(work_dir: &Path, config_dir: &Path) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir)
+        .arg("--config")
+        .arg(config_dir)
+        .arg("compose");
+    cmd
+}
+
+#[test]
+fn compose_resolves_template_name() {
+    let work_dir = TempDir::new().expect("work dir");
+    let config_dir = TempDir::new().expect("config dir");
+
+    // Set up template.d/<name>.d/ with fixture fragments
+    let template_d = config_dir.path().join("template.d").join("mytemplate.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    let out = work_dir.path().join("opencode.json");
+
+    let mut cmd = config_compose_cmd(work_dir.path(), config_dir.path());
+    cmd.arg("mytemplate").arg("-o").arg(&out).assert().success();
+
+    let data = fs::read_to_string(&out).expect("read output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+
+    // Verify content came from the fixture fragments
+    assert_eq!(value["$schema"], "https://opencode.ai/config.json");
+    assert_eq!(value["agent"]["interactive"]["description"], "Orchestrator");
+}
+
+#[test]
+fn compose_rejects_file_template() {
+    let work_dir = TempDir::new().expect("work dir");
+    let config_dir = TempDir::new().expect("config dir");
+
+    // Set up template.d/<name>.json (file template, not a directory)
+    let template_d = config_dir.path().join("template.d");
+    fs::create_dir_all(&template_d).expect("create template.d");
+    fs::write(
+        template_d.join("fileonly.json"),
+        r#"{"agent": {"build": {"model": "gpt-4"}}}"#,
+    )
+    .expect("write file template");
+
+    let out = work_dir.path().join("opencode.json");
+
+    let mut cmd = config_compose_cmd(work_dir.path(), config_dir.path());
+    cmd.arg("fileonly")
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "resolved to a file, not a fragment directory",
+        ));
+}
+
+#[test]
+fn compose_literal_dir_still_works() {
+    let work_dir = TempDir::new().expect("work dir");
+    let xdg = TempDir::new().expect("xdg dir");
+    let frag_dir = work_dir.path().join("my-fragments");
+    copy_fragments(&fixture_fragments_dir(), &frag_dir);
+
+    let out = work_dir.path().join("opencode.json");
+
+    let mut cmd = compose_cmd(work_dir.path(), xdg.path());
+    cmd.arg(&frag_dir).arg("-o").arg(&out).assert().success();
+
+    let data = fs::read_to_string(&out).expect("read output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+
+    assert_eq!(value["$schema"], "https://opencode.ai/config.json");
+    assert_eq!(
+        value["agent"]["coder"]["description"],
+        "Implementation specialist"
+    );
+}
