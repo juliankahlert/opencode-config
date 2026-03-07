@@ -531,3 +531,360 @@ fn compose_literal_dir_still_works() {
         "Implementation specialist"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 11. Round-trip decompose → compose tests and derived output path tests
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TEMPLATE: &str = r#"{
+  "agent": {
+    "build": {
+      "model": "{{build}}",
+      "variant": "{{build-variant}}"
+    },
+    "review": {
+      "model": "{{review}}",
+      "variant": "{{review-variant}}"
+    }
+  },
+  "meta": {
+    "version": "1.0"
+  },
+  "description": "Default template"
+}"#;
+
+const CUSTOM_TEMPLATE: &str = r#"{
+  "agent": {
+    "build": {
+      "model": "{{build}}"
+    }
+  },
+  "description": "Custom template"
+}"#;
+
+const SAMPLE_YAML: &str = r#"
+palettes:
+  github:
+    agents:
+      build:
+        model: openrouter/openai/gpt-4o
+      review:
+        model: openrouter/openai/gpt-4o
+"#;
+
+/// Write model-configs.yaml plus two file templates into a config directory.
+fn write_roundtrip_config(config_dir: &Path) {
+    fs::write(config_dir.join("model-configs.yaml"), SAMPLE_YAML)
+        .expect("write model-configs.yaml");
+
+    let template_dir = config_dir.join("template.d");
+    fs::create_dir_all(&template_dir).expect("create template dir");
+    fs::write(template_dir.join("default.json"), DEFAULT_TEMPLATE).expect("write default template");
+    fs::write(template_dir.join("custom.json"), CUSTOM_TEMPLATE).expect("write custom template");
+}
+
+/// Build a decompose command pointing at a custom config directory.
+fn decompose_cmd(work_dir: &Path, config_dir: &Path) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("opencode-config");
+    cmd.current_dir(work_dir)
+        .arg("--config")
+        .arg(config_dir)
+        .arg("decompose");
+    cmd
+}
+
+#[test]
+fn roundtrip_decompose_compose_default() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+    write_roundtrip_config(config_dir.path());
+
+    let original: Value = serde_json::from_str(DEFAULT_TEMPLATE).expect("parse original");
+
+    // Decompose: default.json → default.d/
+    decompose_cmd(work_dir.path(), config_dir.path())
+        .arg("default")
+        .assert()
+        .success();
+
+    // Compose: default.d/ → default.json (derived output)
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("default")
+        .assert()
+        .success();
+
+    let out_path = config_dir.path().join("template.d").join("default.json");
+    assert!(out_path.exists(), "derived output should exist");
+
+    let data = fs::read_to_string(&out_path).expect("read composed");
+    let composed: Value = serde_json::from_str(&data).expect("parse composed");
+    assert_eq!(original, composed, "round-trip must preserve JSON value");
+}
+
+#[test]
+fn roundtrip_decompose_compose_custom() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+    write_roundtrip_config(config_dir.path());
+
+    let original: Value = serde_json::from_str(CUSTOM_TEMPLATE).expect("parse original");
+
+    // Decompose
+    decompose_cmd(work_dir.path(), config_dir.path())
+        .arg("custom")
+        .assert()
+        .success();
+
+    // Compose back
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("custom")
+        .assert()
+        .success();
+
+    let out_path = config_dir.path().join("template.d").join("custom.json");
+    assert!(out_path.exists(), "derived output should exist");
+
+    let data = fs::read_to_string(&out_path).expect("read composed");
+    let composed: Value = serde_json::from_str(&data).expect("parse composed");
+    assert_eq!(original, composed, "round-trip must preserve JSON value");
+}
+
+#[test]
+fn compose_template_name_derives_output() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+
+    // Set up template.d/myname.d/ with fixture fragments
+    let template_d = config_dir.path().join("template.d").join("myname.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    // Compose with template name only — no -o flag
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("myname")
+        .assert()
+        .success();
+
+    // Output should land at config_dir/template.d/myname.json
+    let derived = config_dir.path().join("template.d").join("myname.json");
+    assert!(derived.exists(), "derived output path should be created");
+
+    // CWD should NOT get an opencode.json
+    assert!(
+        !work_dir.path().join("opencode.json").exists(),
+        "CWD must not receive opencode.json in template-name mode"
+    );
+
+    let data = fs::read_to_string(&derived).expect("read derived output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+    assert_eq!(value["$schema"], "https://opencode.ai/config.json");
+}
+
+#[test]
+fn compose_explicit_out_overrides_derived() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+
+    let template_d = config_dir.path().join("template.d").join("myname.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    let explicit_out = work_dir.path().join("explicit.json");
+
+    // Compose with template name AND explicit -o
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("myname")
+        .arg("-o")
+        .arg(&explicit_out)
+        .assert()
+        .success();
+
+    // Explicit path should exist
+    assert!(explicit_out.exists(), "explicit -o path should be written");
+
+    // Derived path should NOT exist
+    let derived = config_dir.path().join("template.d").join("myname.json");
+    assert!(
+        !derived.exists(),
+        "derived path must not be written when -o is given"
+    );
+}
+
+#[test]
+fn compose_literal_dir_keeps_default_out() {
+    let work_dir = TempDir::new().expect("work dir");
+    let xdg = TempDir::new().expect("xdg dir");
+    let frag_dir = work_dir.path().join("my-fragments");
+    copy_fragments(&fixture_fragments_dir(), &frag_dir);
+
+    // Compose with literal directory — no -o flag
+    compose_cmd(work_dir.path(), xdg.path())
+        .arg(&frag_dir)
+        .assert()
+        .success();
+
+    // Default output should be opencode.json in CWD
+    let default_out = work_dir.path().join("opencode.json");
+    assert!(
+        default_out.exists(),
+        "literal-dir compose without -o should write opencode.json in CWD"
+    );
+
+    let data = fs::read_to_string(&default_out).expect("read output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+    assert_eq!(value["$schema"], "https://opencode.ai/config.json");
+}
+
+#[test]
+fn compose_force_overwrites_template_file() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+
+    let template_d = config_dir.path().join("template.d").join("myname.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    let derived = config_dir.path().join("template.d").join("myname.json");
+    // Pre-create a file at the derived path
+    fs::write(&derived, r#"{"old": true}"#).expect("write existing");
+
+    // Without --force, compose should fail
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("myname")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("output already exists"));
+
+    // With --force, it should overwrite
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("myname")
+        .arg("--force")
+        .assert()
+        .success();
+
+    let data = fs::read_to_string(&derived).expect("read output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+    assert_eq!(
+        value["$schema"], "https://opencode.ai/config.json",
+        "derived file should be overwritten with composed content"
+    );
+}
+
+#[test]
+fn compose_no_force_rejects_existing() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+
+    let template_d = config_dir.path().join("template.d").join("myname.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    let derived = config_dir.path().join("template.d").join("myname.json");
+    fs::write(&derived, r#"{"old": true}"#).expect("write existing");
+
+    // Without --force, compose should fail
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("myname")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("output already exists"));
+
+    // Existing file should be untouched
+    let data = fs::read_to_string(&derived).expect("read existing");
+    assert_eq!(
+        data, r#"{"old": true}"#,
+        "existing file must not be modified"
+    );
+}
+
+#[test]
+fn roundtrip_dry_run_no_side_effects() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+    write_roundtrip_config(config_dir.path());
+
+    // Decompose default to create fragments
+    decompose_cmd(work_dir.path(), config_dir.path())
+        .arg("default")
+        .assert()
+        .success();
+
+    let frag_dir = config_dir.path().join("template.d").join("default.d");
+    assert!(frag_dir.exists(), "fragments should exist after decompose");
+
+    // The derived output path
+    let derived = config_dir.path().join("template.d").join("default.json");
+    // decompose removes the original file, so derived should not exist
+    assert!(
+        !derived.exists(),
+        "decompose should have removed the original file"
+    );
+
+    // Compose with --dry-run: exit code 1 means diff was shown (new file)
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("default")
+        .arg("--dry-run")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("--- /dev/null"));
+
+    // Derived output must NOT exist after dry-run
+    assert!(
+        !derived.exists(),
+        "dry-run must not create the derived output file"
+    );
+
+    // CWD must not have any new files
+    assert!(
+        !work_dir.path().join("opencode.json").exists(),
+        "dry-run must not create opencode.json in CWD"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 12. Template-name resolution takes priority over local directory
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compose_template_name_preferred_over_local_dir() {
+    let config_dir = TempDir::new().expect("config dir");
+    let work_dir = TempDir::new().expect("work dir");
+
+    // Set up config-dir template: template.d/default.d/ with fixture fragments
+    let template_d = config_dir.path().join("template.d").join("default.d");
+    copy_fragments(&fixture_fragments_dir(), &template_d);
+
+    // Set up a LOCAL directory in the working dir with the same name but
+    // different content — a single fragment producing {"local": true}.
+    let local_dir = work_dir.path().join("default");
+    fs::create_dir_all(&local_dir).expect("create local dir");
+    fs::write(local_dir.join("only.json"), r#"{"local": true}"#).expect("write local fragment");
+
+    // Run `compose default` (no -o) from work_dir
+    config_compose_cmd(work_dir.path(), config_dir.path())
+        .arg("default")
+        .assert()
+        .success();
+
+    // Template-name resolution should win: output at config_dir/template.d/default.json
+    let derived = config_dir.path().join("template.d").join("default.json");
+    assert!(
+        derived.exists(),
+        "template-name resolution should produce derived output"
+    );
+
+    let data = fs::read_to_string(&derived).expect("read derived output");
+    let value: Value = serde_json::from_str(&data).expect("parse json");
+
+    // Content must come from the config-dir template fragments, not the local dir
+    assert_eq!(
+        value["$schema"], "https://opencode.ai/config.json",
+        "output must come from config-dir template, not local dir"
+    );
+    assert!(
+        value.get("local").is_none(),
+        "output must NOT contain content from local dir"
+    );
+
+    // CWD must NOT have opencode.json (which would indicate literal-dir fallback)
+    assert!(
+        !work_dir.path().join("opencode.json").exists(),
+        "CWD must not receive opencode.json when template-name wins"
+    );
+}

@@ -349,9 +349,13 @@ pub struct ComposeArgs {
     #[arg(default_value = ".")]
     pub input: String,
 
-    /// Output file path
-    #[arg(short = 'o', long, default_value = "opencode.json")]
-    pub out: PathBuf,
+    /// Output file path.
+    ///
+    /// When omitted, output is derived automatically:
+    /// - **template-name** input → `<config_dir>/template.d/<name>.json`
+    /// - **literal directory** input → `opencode.json` in the current directory
+    #[arg(short = 'o', long)]
+    pub out: Option<PathBuf>,
 
     /// Preview output without writing files
     #[arg(long)]

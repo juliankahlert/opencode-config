@@ -57,19 +57,29 @@ fn handle_dry_run_diff(out_path: &std::path::Path, preview: &str) -> anyhow::Res
 ///
 /// Returns `(resolved_dir, template_name)` where `template_name` is
 /// `Some(name)` when the input was resolved via template-name lookup.
+///
+/// For plain names (`is_valid_template_name`), template-name resolution
+/// takes priority over a same-named local directory in the CWD.  This
+/// ensures `compose default` selects the config-dir template even when a
+/// local `default/` directory exists.
 fn resolve_compose_input(
     input: &str,
     config_dir: &Path,
 ) -> Result<(PathBuf, Option<String>), compose::ComposeError> {
     let literal = PathBuf::from(input);
 
-    // 1) Prefer literal directories when they exist.
-    if literal.is_dir() {
-        return Ok((literal, None));
-    }
-
-    // 2) If input looks like a template name, attempt template resolution.
+    // 1) If input looks like a template name, prefer template-name resolution.
+    //    Compose always targets directories, so check for `<name>.d/` directly
+    //    to avoid ambiguity errors when both `<name>.json` and `<name>.d/`
+    //    coexist (which is the normal state after a successful compose).
     if template::is_valid_template_name(input) {
+        let frag_dir = config_dir.join("template.d").join(format!("{input}.d"));
+        if frag_dir.is_dir() {
+            return Ok((frag_dir, Some(input.to_string())));
+        }
+
+        // No `.d/` directory — fall back to resolve_template_source for
+        // file-only error reporting (NotAFragmentDir).
         let source = template::resolve_template_source(config_dir, input)?;
         match source {
             template::TemplateSource::Directory(dir) => {
@@ -84,6 +94,11 @@ fn resolve_compose_input(
             // template was not found; fall through to literal-path treatment.
             template::TemplateSource::File(_) => {}
         }
+    }
+
+    // 2) Literal directory fallback (local dir in CWD, or explicit path).
+    if literal.is_dir() {
+        return Ok((literal, None));
     }
 
     // 3) Fall back to literal path (compose will report InputDirNotFound).
@@ -433,9 +448,14 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Compose(args) => {
             let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;
-            let (input_dir, _template_name) = resolve_compose_input(&args.input, &config_dir)?;
-            // TODO(WP2): _template_name indicates template-name mode was used;
-            // this will drive header/provenance behaviour in a future work package.
+            let (input_dir, template_name) = resolve_compose_input(&args.input, &config_dir)?;
+            let out_path = if let Some(ref out) = args.out {
+                out.clone()
+            } else if let Some(ref name) = template_name {
+                config_dir.join("template.d").join(format!("{name}.json"))
+            } else {
+                PathBuf::from("opencode.json")
+            };
             let cli_strict = if cli.no_strict {
                 Some(false)
             } else {
@@ -460,7 +480,7 @@ fn main() -> anyhow::Result<()> {
             };
             let options = compose::ComposeOptions {
                 input_dir,
-                out: args.out.clone(),
+                out: out_path.clone(),
                 dry_run: args.dry_run,
                 backup: args.backup,
                 pretty,
@@ -472,7 +492,7 @@ fn main() -> anyhow::Result<()> {
             };
             if args.dry_run {
                 let preview = compose::run_preview(options).context("compose dry-run failed")?;
-                handle_dry_run_diff(&args.out, &preview)?;
+                handle_dry_run_diff(&out_path, &preview)?;
             } else {
                 compose::run(options).context("compose command failed")?;
             }
