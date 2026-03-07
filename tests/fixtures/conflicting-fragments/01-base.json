@@ -1,0 +1,15 @@
+{
+  "agent": {
+    "build": {
+      "model": "{{build}}",
+      "tools": {
+        "task": true,
+        "read": true
+      }
+    }
+  },
+  "metadata": {
+    "version": 1,
+    "tags": ["stable", "production"]
+  }
+}

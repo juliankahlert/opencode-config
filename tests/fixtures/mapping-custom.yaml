@@ -1,0 +1,29 @@
+palettes:
+  custom:
+    agents:
+      orchestrate:
+        model: openrouter/x-ai/grok-4.1-fast
+        reasoning: true
+      plan:
+        model: openrouter/x-ai/grok-4.1-fast
+        reasoning:
+          effort: high
+          text_verbosity: low
+      smart:
+        model: openrouter/minimax/minimax-m2.5
+      smart-fast:
+        model: openrouter/minimax/minimax-m2.5
+      simple:
+        model: openrouter/openai/gpt-5-nano
+      simple-fast:
+        model: openrouter/openai/gpt-5-nano
+      coder:
+        model: openrouter/minimax/minimax-m2.5
+        reasoning:
+          effort: medium
+    mapping:
+      project-name: "opencode-config"
+      max-retries: 3
+      feature-flags:
+        - fragment-merge
+        - env-resolve

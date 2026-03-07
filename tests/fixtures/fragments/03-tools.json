@@ -1,0 +1,18 @@
+{
+  "agent": {
+    "interactive": {
+      "tools": {
+        "task": true,
+        "list": true,
+        "question": true,
+        "read": false
+      }
+    },
+    "explore": {
+      "tools": { "read": true, "grep": true }
+    },
+    "coder": {
+      "tools": { "task": true, "read": true, "write": true, "edit": true, "bash": true }
+    }
+  }
+}

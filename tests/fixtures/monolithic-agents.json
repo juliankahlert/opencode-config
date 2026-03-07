@@ -1,0 +1,46 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "interactive",
+  "permission": {
+    "todowrite": "allow",
+    "todoread": "allow"
+  },
+  "agent": {
+    "interactive": {
+      "description": "Orchestrator",
+      "mode": "primary",
+      "model": "{{orchestrate}}",
+      "prompt": "Role: Orchestrator using {{orchestrate}}.",
+      "task_budget": 99999,
+      "level_limit": 4,
+      "tools": {
+        "task": true,
+        "list": true,
+        "question": true,
+        "read": false
+      }
+    },
+    "explore": {
+      "description": "Explorer",
+      "mode": "subagent",
+      "model": "{{simple-fast}}",
+      "temperature": 0.2,
+      "task_budget": 60,
+      "tools": { "read": true, "grep": true }
+    },
+    "coder": {
+      "description": "Implementation specialist",
+      "mode": "subagent",
+      "model": "{{coder}}",
+      "task_budget": 300,
+      "tools": { "task": true, "read": true, "write": true, "edit": true, "bash": true }
+    },
+    "build": {
+      "description": "Standalone build agent",
+      "mode": "primary",
+      "model": "{{smart-fast}}",
+      "task_budget": 300,
+      "tools": { "task": true, "read": true, "write": true, "bash": true }
+    }
+  }
+}

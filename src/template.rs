@@ -48,6 +48,12 @@ pub enum TemplateError {
     },
     #[error("template directory is empty: {path}")]
     EmptyTemplateDir { path: PathBuf },
+    #[error("template '{name}' is already fragmented at {path}")]
+    AlreadyFragmented { name: String, path: PathBuf },
+    #[error("template '{name}' is already a monolithic file at {path}")]
+    AlreadyMonolithic { name: String, path: PathBuf },
+    #[error("template content is empty")]
+    EmptyTemplate,
 }
 
 /// Discriminant for whether a template name resolved to a single file or a fragment directory.
@@ -344,6 +350,17 @@ pub(crate) fn write_json_pretty<E>(
     fs::write(path, data).map_err(|source| map_write(source, path.to_path_buf()))
 }
 
+#[allow(dead_code)] // will be used by compose/decompose modules
+pub(crate) fn write_json_minified<E>(
+    path: &Path,
+    value: &Value,
+    map_serialize: impl FnOnce(serde_json::Error) -> E,
+    map_write: impl FnOnce(std::io::Error, PathBuf) -> E,
+) -> Result<(), E> {
+    let data = serde_json::to_string(value).map_err(map_serialize)?;
+    fs::write(path, data).map_err(|source| map_write(source, path.to_path_buf()))
+}
+
 fn should_resolve_template_name(template: &str) -> bool {
     if template.contains('/') || template.contains('\\') {
         return false;
@@ -534,7 +551,7 @@ mod tests {
     use super::{
         TemplateError, TemplateSource, apply_alias_models, build_mapping, deep_merge,
         is_template_dir, is_valid_template_name, list_templates, load_template, load_template_dir,
-        load_template_or_dir, resolve_template_source,
+        load_template_or_dir, resolve_template_source, write_json_minified,
     };
     use crate::config::{AgentConfig, Palette, Reasoning, ReasoningCfg};
     #[test]
@@ -1124,5 +1141,114 @@ agent:
     fn is_template_dir_false_for_empty_dir() {
         let temp_dir = TempDir::new().expect("temp dir");
         assert!(!is_template_dir(temp_dir.path()));
+    }
+
+    // === write_json_minified tests ===
+
+    #[test]
+    fn write_json_minified_roundtrip() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("out.json");
+        let original = json!({"agent": {"build": {"model": "gpt-4"}}, "extra": true});
+
+        write_json_minified(
+            &path,
+            &original,
+            |e| format!("serialize: {e}"),
+            |e, p| format!("write {}: {e}", p.display()),
+        )
+        .expect("write minified");
+
+        let raw = fs::read_to_string(&path).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse back");
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn write_json_minified_no_whitespace() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let path = temp_dir.path().join("compact.json");
+        let value = json!({"a": 1, "b": [2, 3]});
+
+        write_json_minified(
+            &path,
+            &value,
+            |e| format!("serialize: {e}"),
+            |e, p| format!("write {}: {e}", p.display()),
+        )
+        .expect("write minified");
+
+        let raw = fs::read_to_string(&path).expect("read back");
+        assert!(
+            !raw.contains('\n'),
+            "minified output must not contain newlines"
+        );
+        assert!(
+            !raw.contains("  "),
+            "minified output must not contain pretty indentation"
+        );
+    }
+
+    #[test]
+    fn write_json_minified_error_mapping() {
+        let bad_path = std::path::Path::new("/no/such/directory/out.json");
+        let value = json!({"key": "value"});
+
+        let result: Result<(), String> = write_json_minified(
+            bad_path,
+            &value,
+            |e| format!("serialize: {e}"),
+            |e, p| format!("write {}: {e}", p.display()),
+        );
+
+        let err = result.expect_err("should fail on bad path");
+        assert!(
+            err.starts_with("write /no/such/directory/out.json:"),
+            "error should come from map_write closure, got: {err}"
+        );
+    }
+
+    // === new TemplateError variant display tests ===
+
+    #[test]
+    fn already_fragmented_display() {
+        let err = TemplateError::AlreadyFragmented {
+            name: "default".to_string(),
+            path: std::path::PathBuf::from("/tmp/template.d/default.d"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("default"), "message should contain name");
+        assert!(
+            msg.contains("/tmp/template.d/default.d"),
+            "message should contain path"
+        );
+        assert!(
+            msg.contains("already fragmented"),
+            "message should contain 'already fragmented'"
+        );
+    }
+
+    #[test]
+    fn already_monolithic_display() {
+        let err = TemplateError::AlreadyMonolithic {
+            name: "default".to_string(),
+            path: std::path::PathBuf::from("/tmp/template.d/default.json"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("default"), "message should contain name");
+        assert!(
+            msg.contains("/tmp/template.d/default.json"),
+            "message should contain path"
+        );
+        assert!(
+            msg.contains("already a monolithic file"),
+            "message should contain 'already a monolithic file'"
+        );
+    }
+
+    #[test]
+    fn empty_template_display() {
+        let err = TemplateError::EmptyTemplate;
+        assert_eq!(err.to_string(), "template content is empty");
     }
 }

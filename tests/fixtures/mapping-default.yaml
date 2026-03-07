@@ -1,0 +1,24 @@
+palettes:
+  default:
+    agents:
+      orchestrate:
+        model: github-copilot/gpt-5.2-codex
+        variant: high
+      plan:
+        model: github-copilot/gpt-5-mini
+        variant: high
+      smart:
+        model: github-copilot/gpt-5.2-codex
+        variant: high
+      smart-fast:
+        model: github-copilot/gpt-5.2-codex
+        variant: medium
+      simple:
+        model: github-copilot/gpt-5-mini
+        variant: medium
+      simple-fast:
+        model: github-copilot/gpt-5-mini
+        variant: low
+      coder:
+        model: github-copilot/gpt-5.2-codex
+        variant: high

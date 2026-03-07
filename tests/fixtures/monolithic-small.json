@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": {
+      "model": "{{build}}",
+      "variant": "{{build-variant}}",
+      "reasoningEffort": "{{agent-build-reasoning-effort}}"
+    },
+    "review": {
+      "model": "{{review}}",
+      "variant": "{{review-variant}}",
+      "reasoningEffort": "{{agent-review-reasoning-effort}}",
+      "textVerbosity": "{{agent-review-text-verbosity}}"
+    }
+  },
+  "description": "Build uses {{build}}"
+}

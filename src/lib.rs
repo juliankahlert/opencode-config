@@ -1,8 +1,10 @@
 pub mod cli;
 pub mod completions;
+pub mod compose;
 pub mod config;
 pub mod create;
 pub(crate) mod create_builder;
+pub mod decompose;
 pub mod diff;
 pub(crate) mod env_resolve;
 pub mod mapping;

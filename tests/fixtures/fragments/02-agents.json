@@ -1,0 +1,25 @@
+{
+  "agent": {
+    "interactive": {
+      "description": "Orchestrator",
+      "mode": "primary",
+      "model": "{{orchestrate}}",
+      "prompt": "Role: Orchestrator using {{orchestrate}}.",
+      "task_budget": 99999,
+      "level_limit": 4
+    },
+    "explore": {
+      "description": "Explorer",
+      "mode": "subagent",
+      "model": "{{simple-fast}}",
+      "temperature": 0.2,
+      "task_budget": 60
+    },
+    "coder": {
+      "description": "Implementation specialist",
+      "mode": "subagent",
+      "model": "{{coder}}",
+      "task_budget": 300
+    }
+  }
+}

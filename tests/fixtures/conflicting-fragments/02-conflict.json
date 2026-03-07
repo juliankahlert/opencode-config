@@ -1,0 +1,11 @@
+{
+  "agent": {
+    "build": {
+      "tools": "none"
+    }
+  },
+  "metadata": {
+    "version": "two",
+    "tags": "experimental"
+  }
+}
