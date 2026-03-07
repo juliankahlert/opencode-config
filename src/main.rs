@@ -3,12 +3,13 @@ use std::path::PathBuf;
 use anyhow::Context;
 use clap::Parser;
 use opencode_config::cli::{
-    Cli, Commands, PaletteCommands, PaletteFormat, PaletteMerge, RenderFormat, SchemaCommands,
-    ValidateFormat,
+    Cli, Commands, ConflictStrategy, PaletteCommands, PaletteFormat, PaletteMerge, RenderFormat,
+    SchemaCommands, ValidateFormat,
 };
 use opencode_config::options::{resolve_env_flag_sources, resolve_run_options};
 use opencode_config::{
-    completions, config, create, diff, palette_io, render, schema, template, validate, wizard,
+    completions, compose, config, create, decompose, diff, palette_io, render, schema, template,
+    validate, wizard,
 };
 
 fn resolve_env_allow(cli: &Cli) -> Option<bool> {
@@ -376,6 +377,66 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        Commands::Decompose(args) => {
+            let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;
+            let options = decompose::DecomposeOptions {
+                template: args.template.clone(),
+                config_dir,
+                dry_run: args.dry_run,
+                verify: args.verify,
+                force: args.force,
+            };
+            if args.dry_run {
+                let preview =
+                    decompose::run_preview(options).context("decompose dry-run failed")?;
+                print!("{preview}");
+            } else {
+                decompose::run(options).context("decompose command failed")?;
+            }
+        }
+        Commands::Compose(args) => {
+            let config_dir = config::resolve_config_dir(cli.config.as_ref().cloned())?;
+            let cli_strict = if cli.no_strict {
+                Some(false)
+            } else {
+                cli.strict
+            };
+            let run_options = resolve_run_options(
+                cli_strict,
+                resolve_env_allow(&cli),
+                resolve_env_mask_logs(&cli),
+                &config_dir,
+            )?;
+            let conflict = match args.conflict {
+                ConflictStrategy::Error => compose::Conflict::Error,
+                ConflictStrategy::LastWins => compose::Conflict::LastWins,
+                ConflictStrategy::Interactive => compose::Conflict::Interactive,
+            };
+            let pretty = match (args.pretty, args.minify) {
+                (true, _) => true,
+                (_, true) => false,
+                // Default: pretty output when neither flag is provided
+                (false, false) => true,
+            };
+            let options = compose::ComposeOptions {
+                input_dir: args.input_dir.clone(),
+                out: args.out.clone(),
+                dry_run: args.dry_run,
+                backup: args.backup,
+                pretty,
+                verify: args.verify,
+                force: args.force,
+                conflict,
+                run_options,
+                config_dir,
+            };
+            if args.dry_run {
+                let preview = compose::run_preview(options).context("compose dry-run failed")?;
+                handle_dry_run_diff(&args.out, &preview)?;
+            } else {
+                compose::run(options).context("compose command failed")?;
+            }
+        }
     }
 
     Ok(())

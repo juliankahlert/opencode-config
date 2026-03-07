@@ -98,6 +98,10 @@ pub enum Commands {
     Schema(SchemaArgs),
     /// Import or export palettes
     Palette(PaletteArgs),
+    /// Decompose opencode.json into per-section fragment files
+    Decompose(DecomposeArgs),
+    /// Compose fragment files back into a single opencode.json
+    Compose(ComposeArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -315,6 +319,63 @@ pub struct SchemaGenerateArgs {
     pub out: Option<PathBuf>,
 }
 
+#[derive(Parser, Debug)]
+pub struct DecomposeArgs {
+    /// Template name to decompose (must be a single file, not already a directory)
+    pub template: String,
+
+    /// Preview decomposition without writing files
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Verify roundtrip: reassemble fragments and compare with original
+    #[arg(long)]
+    pub verify: bool,
+
+    /// Overwrite target directory if it already exists
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct ComposeArgs {
+    /// Input directory containing fragment files
+    #[arg(default_value = ".")]
+    pub input_dir: PathBuf,
+
+    /// Output file path
+    #[arg(short = 'o', long, default_value = "opencode.json")]
+    pub out: PathBuf,
+
+    /// Preview output without writing files
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Create a backup of the output file before overwriting
+    #[arg(long)]
+    pub backup: bool,
+
+    /// Pretty-print JSON output (default when neither flag is given)
+    #[arg(long, conflicts_with = "minify")]
+    pub pretty: bool,
+
+    /// Minify JSON output
+    #[arg(long, conflicts_with = "pretty")]
+    pub minify: bool,
+
+    /// Verify round-trip fidelity after compose
+    #[arg(long)]
+    pub verify: bool,
+
+    /// Overwrite output if it exists
+    #[arg(long)]
+    pub force: bool,
+
+    /// Strategy for handling conflicting keys across fragments
+    #[arg(long, value_enum, default_value_t = ConflictStrategy::Error)]
+    pub conflict: ConflictStrategy,
+}
+
 #[derive(ValueEnum, Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ValidateFormat {
     Text,
@@ -338,6 +399,17 @@ pub enum PaletteMerge {
     Abort,
     Overwrite,
     Merge,
+}
+
+/// Strategy for resolving key conflicts during compose
+#[derive(ValueEnum, Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ConflictStrategy {
+    /// Abort on conflicting keys (default)
+    Error,
+    /// Last fragment wins on conflict
+    LastWins,
+    /// Prompt the user to resolve each conflict interactively
+    Interactive,
 }
 
 #[derive(ValueEnum, Copy, Clone, Debug, Eq, PartialEq)]

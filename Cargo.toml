@@ -61,4 +61,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [dev-dependencies]
 assert_cmd = "2.0.14"
 predicates = "3.1.2"
+serde_json = "1.0.134"
+tempfile = "3.26.0"
 trybuild = "1.0"
