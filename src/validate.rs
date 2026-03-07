@@ -39,11 +39,15 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
+use tracing::info;
 
 use crate::config::{AgentConfig, ModelConfigs, Palette, Reasoning};
 use crate::schema::{build_schema, validate_against_schema};
 use crate::substitute::substitute;
-use crate::template::{TemplateError, build_mapping, load_template};
+use crate::template::{
+    TemplateError, build_mapping, deep_merge, is_template_dir, is_template_extension,
+    load_template, load_template_dir,
+};
 
 #[derive(Debug, Clone)]
 pub struct ValidateOpts {
@@ -304,10 +308,27 @@ impl ValidatorBuilder<PalettesLoaded> {
 
 impl ValidatorBuilder<TemplatesDiscovered> {
     fn scan_templates(mut self) -> Result<ValidatorBuilder<PlaceholdersScanned>, ValidateError> {
+        info!(
+            template_count = self.state.template_paths.len(),
+            "scanning templates for placeholders"
+        );
         let mut scans = Vec::new();
         for template_path in &self.state.template_paths {
             let file_display = display_path(template_path, &self.config_dir);
-            match load_template(template_path) {
+            if template_path.is_dir() {
+                detect_fragment_merge_conflicts(
+                    template_path,
+                    &mut self.report,
+                    self.opts.strict,
+                    &self.config_dir,
+                );
+            }
+            let load_result = if template_path.is_dir() {
+                load_template_dir(template_path)
+            } else {
+                load_template(template_path)
+            };
+            match load_result {
                 Ok(value) => {
                     let mut uses = Vec::new();
                     scan_placeholders(
@@ -406,6 +427,8 @@ impl ValidatorBuilder<ReportReady> {
             };
         }
 
+        info!("validating rendered output against schema");
+
         let Some(palette_info) = &self.state.palette_info else {
             return ValidatorBuilder {
                 config_dir: self.config_dir,
@@ -424,7 +447,12 @@ impl ValidatorBuilder<ReportReady> {
             for template_path in &self.state.template_paths {
                 let file_display = display_path(template_path, &self.config_dir);
 
-                let mut value = match load_template(template_path) {
+                let load_result = if template_path.is_dir() {
+                    load_template_dir(template_path)
+                } else {
+                    load_template(template_path)
+                };
+                let mut value = match load_result {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
@@ -478,115 +506,6 @@ impl ValidatorBuilder<SchemaValidated> {
     fn build(self) -> Result<Report, ValidateError> {
         Ok(self.report.build())
     }
-}
-
-/// Validate the config directory for template and palette issues.
-#[allow(dead_code)]
-fn validate_dir_legacy(config_dir: &Path, opts: ValidateOpts) -> Result<Report, ValidateError> {
-    let mut report = ReportBuilder::default();
-    let placeholder_regex = Regex::new(r"\{\{\s*([^\}]+?)\s*\}\}")?;
-
-    if opts.schema {
-        report.warn_or_error(
-            opts.strict,
-            "validate".to_string(),
-            "$.schema".to_string(),
-            "schema-not-implemented",
-            "schema validation is not implemented".to_string(),
-        );
-    }
-
-    let palettes_path = opts
-        .palettes_path
-        .clone()
-        .unwrap_or_else(|| config_dir.join("model-configs.yaml"));
-    let palettes_result = load_palettes(&palettes_path);
-
-    let palette_info = match palettes_result {
-        Ok(configs) => Some(build_palette_info(
-            &configs,
-            &palettes_path,
-            &mut report,
-            opts.strict,
-            config_dir,
-        )),
-        Err(err) => {
-            report.push(
-                Severity::Error,
-                display_path(&palettes_path, config_dir),
-                "$".to_string(),
-                "invalid-palettes",
-                err.to_string(),
-            );
-            None
-        }
-    };
-
-    let template_paths =
-        resolve_template_paths(config_dir, &opts.templates, &mut report, opts.strict)?;
-    if template_paths.is_empty() {
-        report.warn_or_error(
-            opts.strict,
-            display_path(&config_dir.join("template.d"), config_dir),
-            "$".to_string(),
-            "missing-templates",
-            "no templates found to validate".to_string(),
-        );
-    }
-
-    for template_path in template_paths {
-        let file_display = display_path(&template_path, config_dir);
-        match load_template(&template_path) {
-            Ok(value) => {
-                let mut uses = Vec::new();
-                scan_placeholders(
-                    &value,
-                    "$".to_string(),
-                    None,
-                    &mut uses,
-                    &file_display,
-                    &placeholder_regex,
-                    &mut report,
-                    opts.strict,
-                );
-
-                // Validate env: placeholders separately.
-                validate_env_placeholders(
-                    &uses,
-                    &file_display,
-                    &mut report,
-                    opts.strict,
-                    opts.env_allow,
-                );
-
-                if let Some(info) = palette_info.as_ref() {
-                    let palette_uses: Vec<PlaceholderUse> = uses
-                        .iter()
-                        .filter(|u| !u.key.starts_with("env:"))
-                        .cloned()
-                        .collect();
-                    validate_placeholders(
-                        &palette_uses,
-                        &info.palettes,
-                        &file_display,
-                        &mut report,
-                        opts.strict,
-                    );
-                }
-            }
-            Err(err) => {
-                report.push(
-                    Severity::Error,
-                    file_display,
-                    "$".to_string(),
-                    "invalid-template",
-                    err.to_string(),
-                );
-            }
-        }
-    }
-
-    Ok(report.build())
 }
 
 /// Format a report in human-friendly text.
@@ -774,6 +693,40 @@ fn resolve_template_paths(
             let path = entry.path();
             if is_template_path(&path) {
                 paths.insert(path);
+            } else if path.is_dir() {
+                // Detect template directories like `foo.d/`
+                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str())
+                    && let Some(stem) = dir_name.strip_suffix(".d")
+                    && !stem.is_empty()
+                {
+                    // Check for ambiguity: does a file with the same stem exist?
+                    let has_file = ["json", "yaml", "yml"]
+                        .iter()
+                        .any(|ext| template_dir.join(format!("{stem}.{ext}")).is_file());
+                    if has_file {
+                        report.push(
+                            Severity::Error,
+                            display_path(&path, config_dir),
+                            "$".to_string(),
+                            "ambiguous-template",
+                            format!(
+                                "ambiguous template \"{stem}\": both file and directory exist; remove one"
+                            ),
+                        );
+                    } else if count_template_files_in_dir(&path) == 0 {
+                        report.push(
+                            Severity::Error,
+                            display_path(&path, config_dir),
+                            "$".to_string(),
+                            "empty-template-dir",
+                            format!("template directory is empty: {dir_name}"),
+                        );
+                    } else {
+                        // Valid directory template — check fragments and add
+                        detect_ambiguous_fragments(&path, report, strict, config_dir);
+                        paths.insert(path);
+                    }
+                }
             } else if path.is_file() {
                 report.warn_or_error(
                     strict,
@@ -784,7 +737,9 @@ fn resolve_template_paths(
                 );
             }
         }
-        return Ok(paths.into_iter().collect());
+        let paths: Vec<PathBuf> = paths.into_iter().collect();
+        info!(template_count = paths.len(), "discovered templates");
+        return Ok(paths);
     }
 
     for pattern in patterns {
@@ -810,6 +765,33 @@ fn resolve_template_paths(
                                         "$".to_string(),
                                         "unsupported-template",
                                         "template extension is not supported".to_string(),
+                                    );
+                                }
+                            } else if path.is_dir() {
+                                if is_template_dir(&path) {
+                                    detect_ambiguous_fragments(&path, report, strict, config_dir);
+                                    paths.insert(path);
+                                } else if count_template_files_in_dir(&path) == 0 {
+                                    report.push(
+                                        Severity::Error,
+                                        display_path(&path, config_dir),
+                                        "$".to_string(),
+                                        "empty-template-dir",
+                                        format!(
+                                            "template directory is empty: {}",
+                                            path.file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("?")
+                                        ),
+                                    );
+                                } else {
+                                    report.warn_or_error(
+                                        strict,
+                                        display_path(&path, config_dir),
+                                        "$".to_string(),
+                                        "unsupported-template",
+                                        "directory is not a recognised template directory"
+                                            .to_string(),
                                     );
                                 }
                             }
@@ -847,13 +829,158 @@ fn resolve_template_paths(
         }
     }
 
-    Ok(paths.into_iter().collect())
+    let paths: Vec<PathBuf> = paths.into_iter().collect();
+    info!(template_count = paths.len(), "discovered templates");
+    Ok(paths)
 }
 
 fn is_template_path(path: &Path) -> bool {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => matches!(ext.to_ascii_lowercase().as_str(), "json" | "yaml" | "yml"),
         None => false,
+    }
+}
+
+fn count_template_files_in_dir(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file() && is_template_extension(&e.path()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Detect fragment files within a template directory that share the same
+/// stem but have different extensions (e.g. `base.json` and `base.yaml`).
+fn detect_ambiguous_fragments(
+    dir: &Path,
+    report: &mut ReportBuilder,
+    strict: bool,
+    config_dir: &Path,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    let mut stem_exts: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file()
+            && is_template_extension(&path)
+            && let (Some(stem), Some(ext)) = (
+                path.file_stem().and_then(|s| s.to_str()),
+                path.extension().and_then(|e| e.to_str()),
+            )
+        {
+            stem_exts
+                .entry(stem.to_string())
+                .or_default()
+                .insert(ext.to_ascii_lowercase());
+        }
+    }
+
+    for (stem, exts) in &stem_exts {
+        if exts.len() > 1 {
+            let ext_list: Vec<&str> = exts.iter().map(String::as_str).collect();
+            report.warn_or_error(
+                strict,
+                display_path(dir, config_dir),
+                "$".to_string(),
+                "ambiguous-fragment",
+                format!(
+                    "fragment \"{stem}\" has multiple extensions: {}; keep only one",
+                    ext_list.join(", ")
+                ),
+            );
+        }
+    }
+}
+
+/// Recursively collect JSON paths where `overlay` would overwrite a
+/// non-object value in `base` (or where a type mismatch prevents
+/// recursive merge).
+fn collect_merge_conflicts(
+    base: &Value,
+    overlay: &Value,
+    path: String,
+    conflicts: &mut Vec<String>,
+) {
+    match (base, overlay) {
+        (Value::Object(base_obj), Value::Object(overlay_obj)) => {
+            for (key, overlay_val) in overlay_obj {
+                if let Some(base_val) = base_obj.get(key) {
+                    let child_path = format!("{path}.{key}");
+                    collect_merge_conflicts(base_val, overlay_val, child_path, conflicts);
+                }
+            }
+        }
+        _ => {
+            // At least one side is not an object — overlay replaces base.
+            // Only record a conflict when the replacement actually changes
+            // the value; identical scalars/arrays are harmless duplicates.
+            if base != overlay {
+                conflicts.push(path);
+            }
+        }
+    }
+}
+
+/// Detect merge conflicts across ordered fragments in a template
+/// directory.  Loads fragments in the same lexicographic order used
+/// by `load_template_dir`, tracks an accumulator, and emits a
+/// finding for each path that would be silently overwritten.
+fn detect_fragment_merge_conflicts(
+    dir: &Path,
+    report: &mut ReportBuilder,
+    strict: bool,
+    config_dir: &Path,
+) {
+    let mut entries: Vec<_> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file() && is_template_extension(&e.path()))
+            .collect(),
+        Err(_) => return,
+    };
+    entries.sort_by_key(|e| e.file_name());
+
+    if entries.len() < 2 {
+        return;
+    }
+
+    let mut merged = match load_template(&entries[0].path()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let file_display = display_path(dir, config_dir);
+
+    for entry in &entries[1..] {
+        let overlay = match load_template(&entry.path()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let mut conflicts = Vec::new();
+        collect_merge_conflicts(&merged, &overlay, "$".to_string(), &mut conflicts);
+
+        let fragment_name = entry.file_name().to_string_lossy().to_string();
+        for conflict_path in conflicts {
+            report.warn_or_error(
+                strict,
+                file_display.clone(),
+                conflict_path.clone(),
+                "fragment-merge-conflict",
+                format!(
+                    "fragment \"{fragment_name}\" overwrites existing value at {conflict_path}"
+                ),
+            );
+        }
+
+        deep_merge(&mut merged, &overlay);
     }
 }
 
@@ -2165,6 +2292,364 @@ palettes:
                 .iter()
                 .all(|f| f.kind != "unknown-placeholder"),
             "env placeholder should not fall through to palette lookup"
+        );
+    }
+
+    // -- ambiguous-fragment and fragment-merge-conflict tests ---------------
+
+    /// Helper: create a fragment file inside a `.d/` template directory.
+    fn write_fragment(config_dir: &Path, dir_stem: &str, file_name: &str, contents: &str) {
+        let dir = config_dir.join("template.d").join(format!("{dir_stem}.d"));
+        fs::create_dir_all(&dir).expect("fragment dir");
+        fs::write(dir.join(file_name), contents).expect("write fragment");
+    }
+
+    #[test]
+    fn validate_ambiguous_fragment_warning() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "base.json",
+            r#"{"agent": {"build": {"model": "{{agent-build-model}}"}}}"#,
+        );
+        write_fragment(config_dir, "test", "base.yaml", "extra: value");
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "ambiguous-fragment");
+        assert!(
+            finding.is_some(),
+            "expected ambiguous-fragment finding, got: {:?}",
+            report.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        let finding = finding.unwrap();
+        assert_eq!(finding.severity, Severity::Warning);
+        assert!(
+            finding.message.contains("base"),
+            "message should mention stem 'base', got: {}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn validate_ambiguous_fragment_strict_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "base.json",
+            r#"{"agent": {"build": {"model": "{{agent-build-model}}"}}}"#,
+        );
+        write_fragment(config_dir, "test", "base.yaml", "extra: value");
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: true,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "ambiguous-fragment");
+        assert!(
+            finding.is_some(),
+            "expected ambiguous-fragment finding in strict mode"
+        );
+        assert_eq!(
+            finding.unwrap().severity,
+            Severity::Error,
+            "ambiguous-fragment should be promoted to error in strict mode"
+        );
+    }
+
+    #[test]
+    fn validate_fragment_merge_conflict_warning() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "01-base.json",
+            r#"{"agent": {"build": {"model": "gpt-4"}}}"#,
+        );
+        write_fragment(
+            config_dir,
+            "test",
+            "02-overlay.json",
+            r#"{"agent": {"build": {"model": "gpt-5"}}}"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "fragment-merge-conflict");
+        assert!(
+            finding.is_some(),
+            "expected fragment-merge-conflict finding, got: {:?}",
+            report.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        let finding = finding.unwrap();
+        assert_eq!(finding.severity, Severity::Warning);
+        assert_eq!(
+            finding.path, "$.agent.build.model",
+            "finding path should be the conflicting JSON path"
+        );
+        assert!(
+            finding.message.contains("02-overlay.json"),
+            "message should name the conflicting fragment, got: {}",
+            finding.message
+        );
+    }
+
+    #[test]
+    fn validate_fragment_merge_conflict_strict_error() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "01-base.json",
+            r#"{"agent": {"build": {"model": "gpt-4"}}}"#,
+        );
+        write_fragment(
+            config_dir,
+            "test",
+            "02-overlay.json",
+            r#"{"agent": {"build": {"model": "gpt-5"}}}"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: true,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "fragment-merge-conflict");
+        assert!(
+            finding.is_some(),
+            "expected fragment-merge-conflict finding in strict mode"
+        );
+        assert_eq!(
+            finding.unwrap().severity,
+            Severity::Error,
+            "fragment-merge-conflict should be promoted to error in strict mode"
+        );
+    }
+
+    #[test]
+    fn validate_disjoint_fragments_no_conflict() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "01-base.json",
+            r#"{"agent": {"build": {"model": "{{agent-build-model}}"}}}"#,
+        );
+        write_fragment(config_dir, "test", "02-extra.json", r#"{"extra": "value"}"#);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "fragment-merge-conflict"),
+            "disjoint fragments should not produce merge conflict, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind == "fragment-merge-conflict")
+                .map(|f| format!("{}: {}", f.path, f.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_no_ambiguous_fragments_different_stems() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+        write_fragment(
+            config_dir,
+            "test",
+            "base.json",
+            r#"{"agent": {"build": {"model": "{{agent-build-model}}"}}}"#,
+        );
+        write_fragment(config_dir, "test", "extra.json", r#"{"extra": "value"}"#);
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "ambiguous-fragment"),
+            "different stems should not produce ambiguous-fragment, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind == "ambiguous-fragment")
+                .map(|f| &f.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_pattern_matches_template_dir() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+
+        // Create a .d template directory with an ambiguous fragment pair so
+        // we can verify detect_ambiguous_fragments fires via the pattern path.
+        let frag_dir = config_dir.join("template.d").join("mydir.d");
+        fs::create_dir_all(&frag_dir).expect("create dir");
+        fs::write(
+            frag_dir.join("base.json"),
+            r#"{"agent": {"build": {"model": "{{agent-build-model}}"}}}"#,
+        )
+        .expect("write");
+        fs::write(frag_dir.join("base.yaml"), "extra: value").expect("write");
+
+        let opts = ValidateOpts {
+            templates: vec![frag_dir.to_string_lossy().to_string()],
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+
+        // The directory should be accepted (no unsupported-template finding).
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "unsupported-template"),
+            "valid template dir via pattern should not be unsupported, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind == "unsupported-template")
+                .map(|f| format!("{}: {}", f.file, f.message))
+                .collect::<Vec<_>>()
+        );
+
+        // Ambiguous-fragment detection should still fire via the pattern path.
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == "ambiguous-fragment");
+        assert!(
+            finding.is_some(),
+            "expected ambiguous-fragment from pattern-matched dir, got kinds: {:?}",
+            report.findings.iter().map(|f| &f.kind).collect::<Vec<_>>()
+        );
+        assert_eq!(finding.unwrap().severity, Severity::Warning);
+    }
+
+    #[test]
+    fn validate_identical_scalars_no_merge_conflict() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let config_dir = temp_dir.path();
+        write_palettes(config_dir);
+
+        // Two fragments set the exact same value at the same path.
+        write_fragment(
+            config_dir,
+            "test",
+            "01-base.json",
+            r#"{"agent": {"build": {"model": "gpt-4"}}, "shared": [1, 2]}"#,
+        );
+        write_fragment(
+            config_dir,
+            "test",
+            "02-overlay.json",
+            r#"{"agent": {"build": {"model": "gpt-4"}}, "shared": [1, 2]}"#,
+        );
+
+        let opts = ValidateOpts {
+            templates: Vec::new(),
+            palettes_path: None,
+            strict: false,
+            env_allow: None,
+            env_mask_logs: None,
+            schema: false,
+        };
+
+        let report = validate_dir(config_dir, opts).expect("validate");
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != "fragment-merge-conflict"),
+            "identical values should not produce merge conflict, got: {:?}",
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind == "fragment-merge-conflict")
+                .map(|f| format!("{}: {}", f.path, f.message))
+                .collect::<Vec<_>>()
         );
     }
 }
