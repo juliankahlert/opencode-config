@@ -69,6 +69,10 @@ pub struct Cli {
         conflicts_with = "env_mask_logs"
     )]
     pub no_env_mask_logs: bool,
+
+    /// Enable verbose (debug-level) logging
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -98,7 +102,16 @@ pub enum Commands {
 
 #[derive(Parser, Debug)]
 pub struct CreateArgs {
-    /// Template name to use
+    /// Template name to use for config generation.
+    ///
+    /// Accepts a template name resolved under `template.d/`: the tool looks
+    /// for `<name>.json|yaml|yml` first, then for the fragment directory
+    /// `<name>.d/`. If both a file and a directory match, resolution fails
+    /// with an ambiguity error.
+    ///
+    /// Directory templates (`<name>.d/`) are assembled by merging fragments
+    /// in lexicographic order before rendering. When combined with `--dry-run`
+    /// or `--force`, the merged result is what gets previewed or written.
     #[arg(required_unless_present = "interactive")]
     pub template: Option<String>,
     /// Palette name to use
@@ -125,7 +138,16 @@ pub struct CreateArgs {
 #[derive(Parser, Debug)]
 pub struct SwitchArgs {
     /// Switch behaves like `create` but implicitly overwrites the output file.
-    /// Template name to use
+    ///
+    /// Template name to use, resolved under `template.d/`: the tool looks
+    /// for `<name>.json|yaml|yml` first, then for the fragment directory
+    /// `<name>.d/`. If both a file and a directory match, resolution fails
+    /// with an ambiguity error.
+    ///
+    /// Directory templates (`<name>.d/`) are assembled by merging fragments
+    /// in lexicographic order before rendering. With `--dry-run` the merged
+    /// result is previewed without writing; otherwise the output file is
+    /// overwritten unconditionally.
     pub template: String,
     /// Palette name to use
     pub palette: String,
@@ -152,7 +174,17 @@ pub struct CompletionsArgs {
 
 #[derive(Parser, Debug)]
 pub struct ValidateArgs {
-    /// Template glob(s) (defaults to template.d/*.json|yaml|yml)
+    /// Glob pattern(s) selecting templates to validate.
+    ///
+    /// Defaults to scanning `template.d/` for all `*.json`, `*.yaml`, and
+    /// `*.yml` files as well as fragment directories (`*.d/`). Each pattern
+    /// may match single-file templates or fragment directories; both kinds
+    /// are validated.
+    ///
+    /// Fragment directories are assembled by merging their contents in
+    /// lexicographic order before validation. During default discovery
+    /// (no patterns given), a name that resolves to both a file and a
+    /// directory is reported as an ambiguity error.
     #[arg(long = "templates", value_name = "GLOB")]
     pub templates: Vec<String>,
 
@@ -171,7 +203,17 @@ pub struct ValidateArgs {
 
 #[derive(Parser, Debug)]
 pub struct RenderArgs {
-    /// Template name or path to use
+    /// Template name or path to use for rendering.
+    ///
+    /// Accepts either a **name** or a **file path**. Values containing a
+    /// path separator (`/` or `\`) or a filename extension (e.g. `.json`)
+    /// are treated as literal filesystem paths. Plain names are resolved
+    /// under `template.d/`: the tool looks for `<name>.json|yaml|yml`
+    /// first, then for the fragment directory `<name>.d/`. If both a file
+    /// and a directory match, resolution fails with an ambiguity error.
+    ///
+    /// Directory templates (`<name>.d/`) are assembled by merging fragments
+    /// in lexicographic order before rendering.
     #[arg(short = 't', long = "template")]
     pub template: String,
     /// Palette name to use
@@ -186,7 +228,10 @@ pub struct RenderArgs {
     #[arg(long, value_enum, default_value_t = RenderFormat::Json)]
     pub format: RenderFormat,
 
-    /// Print without writing output
+    /// Preview without writing to a file.
+    ///
+    /// For file targets, shows a unified diff against the existing content.
+    /// For stdout (`-`), prints the rendered output directly.
     #[arg(long)]
     pub dry_run: bool,
 }
