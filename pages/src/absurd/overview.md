@@ -2,14 +2,14 @@
 
 **File:** `absurd.json`
 
-The absurd configuration is a streamlined variant that replaces `todoread`/`todowrite` with `list`-based context, relaxes file-return policies, and enhances the plan agent with visual mdbook + mermaid output. Its architecture is built on two foundational principles: **every workflow is a loop** and **context is managed through subagent isolation**.
+The absurd configuration is a streamlined variant that replaces `todoread` with `list`-based context (while retaining `todowrite` globally), relaxes file-return policies, and enhances the plan agent with visual mdbook + mermaid output. Its architecture is built on two foundational principles: **every workflow is a loop** and **context is managed through subagent isolation**.
 
 ## Global Settings
 
 | Setting | Value |
 |---------|-------|
 | `$schema` | `https://opencode.ai/config.json` |
-| `default_agent` | `plan` |
+| `default_agent` | `doc` |
 | **Permissions** | `todowrite: allow`, `todoread: allow` |
 
 ## Design Principles
@@ -59,14 +59,14 @@ graph TD
 
     subgraph "Subagents"
         direction LR
-        EXP["explore<br/>Model: simple-fast"]
+        EXP["explore<br/>Model: explore"]
         GEN["general<br/>Model: simple-fast"]
         GIT["git<br/>Model: smart"]
         XPT["expert<br/>Model: consultant"]
         WPM["wp-manager<br/>Model: smart-fast"]
         COD["coder<br/>Model: coder"]
         TST["test<br/>Model: simple"]
-        CHK["checker<br/>Model: smart-fast"]
+        CHK["checker<br/>Model: checker"]
         UXD["ux<br/>Model: coder"]
         DBG["debug<br/>Model: consultant"]
         SEC["security<br/>Model: smart"]
@@ -85,41 +85,94 @@ Template variables map to capability tiers, not specific model names (which chan
 | `{{orchestrate}}` | High | Long-context reasoning, workflow management, multi-step planning | interactive, autonom |
 | `{{consultant}}` | High | Deep architectural analysis, complex investigation, expert judgment | expert, debug |
 | `{{smart}}` | High | Careful analysis, nuanced decisions, comprehensive review | git, review, security |
-| `{{smart-fast}}` | Mid-High | Fast analysis with good judgment, quick reviews | build, checker, wp-manager |
+| `{{smart-fast}}` | Mid-High | Fast analysis with good judgment, quick reviews | build, wp-manager |
+| `{{checker}}` | Mid-High | Code review, standards compliance, quality assessment | checker |
 | `{{coder}}` | Mid-High | Code generation, implementation, technical fluency | coder, ux, technical-writer, shell-coder, json-yaml-coder |
 | `{{plan}}` | High | Structured planning, document generation, visual output | plan, research |
 | `{{simple}}` | Mid | Reliable execution of well-defined tasks, structured reporting | test |
-| `{{simple-fast}}` | Mid | Fast execution of focused tasks, discovery, minor edits | explore, general |
+| `{{simple-fast}}` | Mid | Fast execution of focused tasks, minor edits | general |
+| `{{explore}}` | Mid | Focused codebase discovery, file inspection, pattern search | explore |
 | `{{cheap}}` | Low | Minimal tasks requiring no reasoning (titles, labels, orchestration) | title, doc |
 
 ## Tool Access Matrix
 
-| Agent | task | read | write | edit | bash | glob | grep | web | todo |
-|-------|------|------|-------|------|------|------|------|-----|------|
-| interactive | Y | - | - | - | - | - | - | - | Y* |
-| autonom | Y | - | - | - | - | - | - | - | Y* |
-| wp-manager | Y | - | - | - | - | - | - | - | Y* |
-| explore | Y | Y | - | - | Y | - | Y | Y | - |
-| general | Y | Y | Y | Y | Y | Y | Y | Y | - |
-| git | Y | Y | - | - | Y | Y | Y | - | - |
-| expert | Y | Y | - | - | Y | Y | Y | Y | - |
-| coder | Y | Y | Y | Y | Y | Y | Y | Y | - |
-| test | - | Y | - | - | Y | Y | Y | - | - |
-| checker | - | Y | - | - | Y | Y | Y | - | - |
-| ux | Y | Y | Y | Y | Y | Y | Y | Y | - |
-| research | Y | Y | - | - | - | Y | Y | Y | Y* |
-| review | Y | Y | - | - | - | Y | Y | Y | Y* |
-| build | Y | Y | Y | Y | Y | Y | Y | Y | Y* |
-| plan | Y | - | - | - | Y | - | - | - | Y* |
-| debug | Y | Y | - | - | Y | Y | Y | Y | - |
-| security | - | Y | - | - | Y | Y | Y | Y | - |
-| doc | Y | - | - | - | Y | - | - | - | Y* |
-| technical-writer | Y | Y | Y | Y | - | Y | Y | Y | - |
-| shell-coder | - | Y | Y | Y | Y | Y | Y | - | - |
-| json-yaml-coder | - | Y | Y | Y | Y | Y | Y | - | - |
-| title | - | - | - | - | - | - | - | - | - |
+| Agent | task | list | question | read | write | edit | bash | glob | grep | web | todowrite |
+|-------|------|------|----------|------|-------|------|------|------|------|-----|-----------|
+| interactive | Y | Y | Y | - | - | - | - | - | - | - | Y* |
+| autonom | Y | Y | - | - | - | - | - | - | - | - | Y* |
+| wp-manager | Y | Y | - | - | - | - | - | - | - | - | Y* |
+| explore | Y | Y | - | Y | - | - | Y | - | Y | Y | - |
+| general | Y | Y | - | Y | Y | Y | Y | Y | Y | Y | - |
+| git | Y | Y | - | Y | - | - | Y | Y | Y | - | - |
+| expert | Y | Y | - | Y | - | - | Y | Y | Y | Y | - |
+| coder | Y | Y | - | Y | Y | Y | Y | Y | Y | Y | - |
+| test | - | Y | - | Y | - | - | Y | Y | Y | - | - |
+| checker | - | Y | - | Y | - | - | Y | Y | Y | - | - |
+| ux | Y | Y | - | Y | Y | Y | Y | Y | Y | Y | - |
+| research | Y | Y | Y | Y | - | - | - | Y | Y | Y | Y* |
+| review | Y | Y | - | Y | - | - | - | Y | Y | Y | Y* |
+| build | Y | Y | - | Y | Y | Y | Y | Y | Y | Y | Y* |
+| plan | Y | Y | Y | - | - | - | Y | - | - | - | Y* |
+| debug | Y | Y | - | Y | - | - | Y | Y | Y | Y | - |
+| security | - | Y | - | Y | - | - | Y | Y | Y | Y | - |
+| doc | Y | Y | Y | - | - | - | Y | - | - | - | Y* |
+| technical-writer | Y | Y | - | Y | Y | Y | - | Y | Y | Y | - |
+| shell-coder | - | Y | - | Y | Y | Y | Y | Y | Y | - | - |
+| json-yaml-coder | - | Y | - | Y | Y | Y | Y | Y | Y | - | - |
+| title | - | - | - | - | - | - | - | - | - | - | - |
 
 *\* `todowrite` only (no `todoread` — uses `list` instead)*
+
+### Agent-Level Permissions Matrix
+
+Agents inherit the global `permission` defaults (`todowrite: allow`, `todoread: allow`) unless overridden. The `edit` and `read` permissions below control **file-system access** independently of tool availability — an agent may have the `read` tool but still be denied by its permission block.
+
+**Orchestrators — no file access** (`edit: deny`, `read: deny`):
+
+| Agent | edit | read | Notes |
+|-------|------|------|-------|
+| interactive | deny | deny | Orchestrator — delegates all file work |
+| autonom | deny | deny | Orchestrator — delegates all file work |
+| wp-manager | deny | deny | Orchestrator — delegates all file work |
+| plan | deny | deny | Orchestrator — delegates all file work |
+| doc | deny | deny | Orchestrator — coordinates writers, never reads/writes pages |
+
+**Read-only observers** (`edit: deny`, `read: allow`):
+
+| Agent | edit | read | Notes |
+|-------|------|------|-------|
+| explore | deny | allow | Read-only observer |
+| expert | deny | allow | Read-only analyst |
+| review | deny | allow | Read-only reviewer |
+| build | deny | allow | Delegates edits to @coder; reads files directly |
+| test | deny | allow | Read-only verifier |
+| checker | deny | allow | Read-only reviewer |
+
+**Full access** (`edit: allow`, `read: allow`):
+
+| Agent | edit | read | Notes |
+|-------|------|------|-------|
+| general | allow | allow | Full access for minor edits |
+| ux | allow | allow | Full access for frontend work |
+
+**Glob-pattern restriction:**
+
+| Agent | edit | read | Notes |
+|-------|------|------|-------|
+| coder | `*`: allow; `*.md`, `*.txt`, `*.yaml`, `*.json`: deny | *(inherit global)* | Denied for doc/config files; wildcard allow for all others |
+
+**Inherit global defaults** (no explicit `permission` block):
+
+| Agent | edit | read | Notes |
+|-------|------|------|-------|
+| technical-writer | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| shell-coder | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| json-yaml-coder | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| debug | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| security | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| git | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| research | *(inherit global)* | *(inherit global)* | No explicit permission block |
+| title | *(inherit global)* | *(inherit global)* | No explicit permission block; no tools at all |
 
 ## Coordination Model
 
@@ -184,10 +237,17 @@ Orchestrators interpret @test and @checker results (received via `task` delegati
 | Complex multi-file feature with user oversight | `interactive` |
 | CI/CD pipeline, automated batch processing | `autonom` |
 | Single-shot bug fix, quick implementation | `build` |
+| Single work-package from a larger plan | `build` (with @expert refinement) |
 | Comprehensive code audit | `review` |
 | Codebase questions, architecture understanding, information retrieval | `research` |
 | Design document, project planning | `plan` |
 | Software/system documentation, mdbook generation | `doc` |
+
+> **Build as a single-workpackage entry point.**
+> The `build` agent also accepts prompts scoped to a single work package — not only ad-hoc bug fixes.
+> When given a focused task, build delegates refinement to **@expert** (which produces grounded analysis and concrete work-package definitions) before entering its orient → implement → verify loop.
+> If the prompt does not specify files, build operates in **File scope: auto** mode and uses *lazy exploration*: it calls **@explore** on demand to discover relevant code rather than reading the entire repository upfront.
+> This makes `build` the right choice for executing one package from a larger plan without spinning up the full interactive or autonomous orchestrator.
 
 ## The Loop Principle: Everything Is a RALPH Loop
 
@@ -375,7 +435,7 @@ The tool access matrix enforces isolation structurally — it is not a suggestio
 
 | Agent Type | File Read | File Write | Why |
 |-----------|-----------|------------|-----|
-| **Orchestrators** (interactive, autonom, plan) | No | No | Prevents context pollution from code |
+| **Orchestrators** (interactive, autonom, wp-manager, plan) | No | No | Prevents context pollution from code |
 | **Doc orchestrator** (doc) | No | No | Coordinates writers, never reads/writes pages |
 | **Researchers** (explore, research, expert) | Yes | No | Can observe but not mutate |
 | **Implementers** (coder, ux, technical-writer, shell-coder, json-yaml-coder) | Yes | Yes | Need full file access for their work |

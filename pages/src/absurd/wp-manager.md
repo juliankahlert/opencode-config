@@ -8,10 +8,24 @@ Orchestrates the complete lifecycle of a single workpackage on behalf of the aut
 
 | Tool | Access | Purpose |
 |------|--------|---------|
-| `task` | Yes | Delegate to expert, implementers, verifiers, and git |
-| `todowrite` | Yes | Track workpackage progress |
-| `question` | **No** | No user interaction |
-| All others | No | Handled by subagents |
+| `task` | <span style="color: var(--blockquote-tip-color)">**Yes**</span> | Delegate work to @expert, @coder, @ux, @test, @checker, @git, and @explore |
+| `list` | <span style="color: var(--blockquote-tip-color)">**Yes**</span> | List directory contents for lightweight codebase orientation without full file reads |
+| `todowrite` | <span style="color: var(--blockquote-tip-color)">**Yes**</span> | Track workpackage progress and checkpoint state across retries |
+| `question` | <span style="color: var(--blockquote-caution-color)">**No**</span> | Disabled — no user interaction in autonomous mode |
+| All others | <span style="color: var(--blockquote-caution-color)">**No**</span> | `read`, `write`, `edit`, `bash`, `glob`, `grep`, `webfetch`, `websearch`, `codesearch`, `google_search` — all handled by subagents |
+
+### Agent-Level Permissions
+
+Beyond the tool table above, `absurd.json` sets two **permission-level denies** on the wp-manager agent:
+
+| Permission | Value | Runtime Effect |
+|------------|-------|----------------|
+| `edit` | <span style="color: var(--blockquote-caution-color)">**deny**</span> | The agent cannot modify any file on disk, even if a tool that edits were somehow available |
+| `read` | <span style="color: var(--blockquote-caution-color)">**deny**</span> | The agent cannot read file contents directly; `list` (directory listing) is still permitted |
+
+> **Why both tool disabling *and* permission denies?** Tool flags (`"read": false`) prevent the tool from appearing in the agent's tool list. Permission denies (`"read": "deny"`) are a runtime enforcement layer that blocks the underlying capability regardless of tool availability. The two mechanisms are defense-in-depth: even if a future configuration change re-enables a tool, the permission deny still prevents direct file access.
+
+**Practical implication:** the wp-manager has **no direct file access**. Every file read, edit, and write happens through `task` delegation to subagents (@expert, @coder, @test, @checker, @explore, etc.). The only local capability beyond delegation is `list` for directory orientation and `todowrite` for progress tracking.
 
 ---
 
